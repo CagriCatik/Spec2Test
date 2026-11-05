@@ -108,7 +108,8 @@ def ollama_settings_from_config(
 ) -> OllamaSettings:
     model_cfg = config.get("model") or {}
     cloud_cfg = config.get("cloud") or {}
-    resolved_mode = mode or cloud_cfg.get("mode") or MODE_CLOUD
+    # no configured mode means the local daemon: it needs no credentials
+    resolved_mode = mode or cloud_cfg.get("mode") or MODE_LOCAL
     if resolved_mode == MODE_FAKE:
         resolved_mode = MODE_CLOUD  # only used to build a descriptor shape
     # an explicit host always wins; otherwise the mode decides the default

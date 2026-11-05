@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import yaml
-from PySide6.QtCore import QThreadPool, Qt, QTimer
+from PySide6.QtCore import QSignalBlocker, QThreadPool, Qt, QTimer
 from PySide6.QtGui import QAction, QCursor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -53,13 +53,11 @@ from ..adapters.ollama import API_KEY_ENV, capabilities_for, check_model_choice
 from ..application.legacy import legacy_rows
 from ..bootstrap import default_config_path, generation_settings_from_config
 from ..config import (
+    DEFAULT_JOB_TIMEOUT_S,
     MODE_CLOUD,
     MODE_LOCAL,
     AppConfig,
     CloudConfig,
-    GenerationConfig,
-    ModelConfig,
-    PathConfig,
 )
 from .help_text import PARAMETER_DOC
 from .models import TestCaseTableModel
@@ -136,6 +134,7 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(str(icon)))
         self.setStyleSheet(STYLESHEET)
 
+        self._closing = False
         self._threadpool = QThreadPool.globalInstance()
         self._config_path = config_path or default_config_path()
         self._spec_paths: list[Path] = []
@@ -146,15 +145,21 @@ class MainWindow(QMainWindow):
         self._start_time: float | None = None
         self._model_list_pending = False
         self._model_task: ModelListTask | None = None
+        #: the file as loaded; the window only overlays the fields it owns
+        self._loaded_config: dict[str, Any] = {}
+        #: where the job budget came from, so it is written back in place
+        self._job_timeout_key = "cloud"
 
         self._build_menubar()
         self._build_ui()
         self._load_config()
 
         # The model list is fetched once the event loop runs, so building the
-        # window never waits for a network round trip.
+        # window never waits for a network round trip. The window is passed as
+        # the timer's context: if it is closed first, the call is dropped
+        # instead of firing against a dead window.
         self._on_mode_changed(self.mode.currentText(), refresh=False)
-        QTimer.singleShot(0, self.refresh_models)
+        QTimer.singleShot(0, self, self.refresh_models)
 
     # =================================================================
     # construction
@@ -446,10 +451,30 @@ class MainWindow(QMainWindow):
                 self.log_line(f"Settings loaded from {self._config_path}")
         else:
             self.log_line("No config.yml found; using defaults")
-        self.apply_config(AppConfig.from_dict(data))
+
+        # Everything the window has no control over is kept verbatim, so a
+        # setting without a widget survives the trip to the worker.
+        self._loaded_config = data if isinstance(data, dict) else {}
+        raw_generation = self._loaded_config.get("generation") or {}
+        raw_cloud = self._loaded_config.get("cloud") or {}
+        self._job_timeout_key = (
+            "generation" if "job_timeout_s" in raw_generation else "cloud"
+        )
+        budget = raw_generation.get(
+            "job_timeout_s", raw_cloud.get("job_timeout_s", DEFAULT_JOB_TIMEOUT_S)
+        )
+        self.apply_config(AppConfig.from_dict(self._loaded_config))
+        try:
+            self.job_timeout.setValue(int(float(budget)))
+        except (TypeError, ValueError):
+            pass
 
     def apply_config(self, cfg: AppConfig) -> None:
+        # Applying a configuration must not trigger a model-list request:
+        # the caller decides when the endpoint is contacted.
+        blocker = QSignalBlocker(self.mode)
         self.mode.setCurrentText(cfg.cloud.mode)
+        del blocker
         self.host.setText(cfg.cloud.host or "")
         self.connect_timeout.setValue(cfg.cloud.connect_timeout_s)
         self.read_timeout.setValue(cfg.cloud.read_timeout_s)
@@ -492,36 +517,59 @@ class MainWindow(QMainWindow):
             cloud.job_timeout_s = job_timeout_s
         return cloud
 
-    def collect_config(self) -> dict[str, Any]:
-        """The current window state as a plain configuration dictionary."""
-        return AppConfig(
-            cloud=self.cloud_config(job_timeout_s=float(self.job_timeout.value())),
-            model=ModelConfig(
-                name=self.model_name.currentText().strip(),
-                temperature=self.temperature.value(),
-                top_p=self.top_p.value(),
-                top_k=self.top_k.value(),
-                max_tokens=self.max_tokens.value(),
-                use_gpu=self.use_gpu.isChecked(),
-                num_gpu=None if self.num_gpu.value() == -1 else self.num_gpu.value(),
-                main_gpu=None if self.main_gpu.value() == -1 else self.main_gpu.value(),
-                gpu_layers=(
+    def widget_overlay(self) -> dict[str, Any]:
+        """Only the fields the window actually edits.
+
+        Everything else - model.url, cloud.max_retries, the input budget, the
+        legacy sections - stays as it was loaded.
+        """
+        overlay: dict[str, Any] = {
+            "cloud": {
+                "mode": self.mode.currentText(),
+                "host": self.host.text().strip() or None,
+                "connect_timeout_s": self.connect_timeout.value(),
+                "read_timeout_s": self.read_timeout.value(),
+            },
+            "model": {
+                "name": self.model_name.currentText().strip(),
+                "temperature": self.temperature.value(),
+                "top_p": self.top_p.value(),
+                "top_k": self.top_k.value(),
+                "max_tokens": self.max_tokens.value(),
+                "use_gpu": self.use_gpu.isChecked(),
+                "num_gpu": None if self.num_gpu.value() == -1 else self.num_gpu.value(),
+                "main_gpu": (
+                    None if self.main_gpu.value() == -1 else self.main_gpu.value()
+                ),
+                "gpu_layers": (
                     None if self.gpu_layers.value() == -1 else self.gpu_layers.value()
                 ),
-                num_thread=(
+                "num_thread": (
                     None if self.num_thread.value() == 0 else self.num_thread.value()
                 ),
-            ),
-            generation=GenerationConfig(
-                max_cases_per_unit=self.max_cases_per_unit.value(),
-                max_repair_attempts=self.max_repair_attempts.value(),
-                group_size=self.group_size.value(),
-            ),
-            paths=PathConfig(
-                pdf_path=self._spec_paths[0] if self._spec_paths else None,
-                prompt_path=self._guidance_path,
-            ),
-        ).to_dict()
+            },
+            "generation": {
+                "max_cases_per_unit": self.max_cases_per_unit.value(),
+                "max_repair_attempts": self.max_repair_attempts.value(),
+                "group_size": self.group_size.value(),
+            },
+        }
+        # write the job budget back where it came from
+        overlay.setdefault(self._job_timeout_key, {})["job_timeout_s"] = float(
+            self.job_timeout.value()
+        )
+        paths: dict[str, Any] = {}
+        if self._spec_paths:
+            paths["pdf_path"] = str(self._spec_paths[0])
+        if self._guidance_path:
+            paths["prompt_path"] = str(self._guidance_path)
+        if paths:
+            overlay["paths"] = paths
+        return overlay
+
+    def collect_config(self) -> dict[str, Any]:
+        """The loaded configuration with the edited fields applied on top."""
+        return merge_config(self._loaded_config, self.widget_overlay())
 
     def write_config(self) -> None:
         """Write the current settings to config.yml - an explicit action.
@@ -582,6 +630,8 @@ class MainWindow(QMainWindow):
 
     def refresh_models(self) -> None:
         """Fetch /api/tags in the background; never block the GUI thread."""
+        if getattr(self, "_closing", False):
+            return
         cloud = self.cloud_config()
         self._model_list_pending = True
         self.btn_check.setEnabled(False)
@@ -973,6 +1023,7 @@ class MainWindow(QMainWindow):
         config.yml is deliberately not written here: settings are only stored
         when the user chooses it in the File menu.
         """
+        self._closing = True
         if self._task is not None:
             self._task.cancel()
         self._threadpool.waitForDone(2000)

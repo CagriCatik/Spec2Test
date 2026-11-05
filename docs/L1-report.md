@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  523 bestanden, 5 übersprungen
+pytest -q  →  532 bestanden, 4 übersprungen (mit scikit-learn)
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -493,6 +493,58 @@ Abschnitte. Ein Test schließt das Fenster nach Änderungen und prüft, dass die
 Datei byteweise unverändert bleibt.
 
 Teststand: **523 bestanden, 5 übersprungen**.
+
+## 13 Review von `bbe307c`
+
+### Konfigurationswerte gingen zwischen Laden und Ausführen verloren
+
+Alle vier gemeldeten Werte reproduziert: `collect_config()` baute eine frische
+`AppConfig`, sodass jedes Feld ohne Bedienelement auf den Dataclass-Standard
+zurückfiel – `model.url`, `cloud.max_retries`, `generation.input_char_budget`
+und das Zeitbudget aus `generation.job_timeout_s`. GUI und CLI konnten damit
+trotz derselben Datei verschiedene Server und Limits verwenden.
+
+Das Fenster hält jetzt die geladene Datei als `_loaded_config` und legt nur
+die Felder darüber, die es wirklich bearbeitet (`widget_overlay()`). Das
+Zeitbudget wird dorthin zurückgeschrieben, wo es herkam – `generation` oder
+`cloud` –, damit der Rundlauf verlustfrei ist. Vier Tests verfolgen die Werte
+über Laden → Fenster → abgeleitete Worker-Einstellungen; weitere prüfen, dass
+unbekannte Abschnitte überleben und bearbeitete Felder trotzdem gewinnen.
+
+### Instabiler GUI-Test
+
+Lokal zunächst nicht reproduzierbar, weil beim Reviewer scikit-learn
+installiert ist und ein Test mehr läuft. Die Ursache war trotzdem eindeutig
+und beim Nachstellen fiel ein echter Fehler auf: `apply_config()` setzte den
+Modus im Kombinationsfeld, löste damit `currentTextChanged` aus und startete
+**während des Fensteraufbaus** synchron eine Modellabfrage. Deren Task lief
+später auf dem globalen Threadpool und meldete den Modus des alten Fensters in
+den gerade laufenden Test hinein.
+
+Drei Korrekturen:
+
+* `apply_config()` blockiert das Signal des Kombinationsfelds; wann der
+  Endpunkt kontaktiert wird, entscheidet der Aufrufer.
+* Der verzögerte Abruf hängt am Fenster (`QTimer.singleShot(0, self, …)`), und
+  `refresh_models()` bricht ab, wenn das Fenster geschlossen wird.
+* Die Tests räumen Fenster, Timer und anstehende Ereignisse nach jedem Test
+  ab.
+
+Zwei Regressionstests stellen genau die gemeldete Kreuzkontamination nach;
+ohne die Korrektur schlagen beide fehl. Mit installiertem scikit-learn, also
+in der Umgebung des Reviewers, liefen danach acht vollständige Durchläufe
+hintereinander grün.
+
+### Standardmodus vereinheitlicht
+
+Dabei fiel auf, dass ohne Konfigurationsdatei weiterhin `ollama_cloud` die
+Vorgabe war, obwohl `ollama_local` als Standard dokumentiert ist. `DEFAULT_MODE`,
+der Rückfall in `bootstrap` und der von `spec2test models` nutzen jetzt
+einheitlich `ollama_local`; nur `spec2test run` fällt ohne Konfiguration
+weiterhin bewusst auf `fake` zurück, damit der Offline-Beispiellauf ohne
+Vorbereitung funktioniert.
+
+Teststand: **532 bestanden, 4 übersprungen** (mit scikit-learn).
 
 ## 9 Commits
 

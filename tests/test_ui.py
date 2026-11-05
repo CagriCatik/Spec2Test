@@ -61,13 +61,31 @@ def isolated_workspace(tmp_path, monkeypatch):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def clean_qt_state(app):
+    """Leave no window, timer or queued event behind.
+
+    Without this, a deferred model-list refresh of one test's window fires
+    during the next test and reports that window's mode.
+    """
+    yield
+    for widget in list(QApplication.topLevelWidgets()):
+        widget.close()
+        widget.deleteLater()
+    for _ in range(3):
+        QApplication.processEvents()
+    QApplication.sendPostedEvents(None, 0)
+    QApplication.processEvents()
+
+
 @pytest.fixture
 def window(app, tmp_path):
     """A window with no configuration file and no network access."""
     window = MainWindow(config_path=tmp_path / "config.yml")
     window._threadpool = SynchronousPool()
     window.model_name.setCurrentText("test-model:1b")
-    return window
+    yield window
+    window.close()
 
 
 @pytest.fixture
@@ -210,6 +228,93 @@ def test_the_merge_helper_overlays_without_dropping():
         {"a": {"keep": 1, "change": 1}, "b": 1}, {"a": {"change": 2}, "c": 3}
     )
     assert merged == {"a": {"keep": 1, "change": 2}, "b": 1, "c": 3}
+
+
+# =====================================================================
+# the loaded configuration survives the trip to the worker
+# =====================================================================
+def test_settings_without_a_widget_are_not_replaced_by_defaults(app, tmp_path):
+    """Load -> window -> worker must not lose values the window cannot edit."""
+    path = tmp_path / "config.yml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "cloud": {"mode": "ollama_local", "max_retries": 0},
+                "model": {"url": "http://custom-daemon:11434", "name": "m:1b"},
+                "generation": {"input_char_budget": 1234, "job_timeout_s": 42},
+            }
+        ),
+        encoding="utf-8",
+    )
+    from spec2test.bootstrap import (
+        generation_settings_from_config,
+        ollama_settings_from_config,
+    )
+
+    window = MainWindow(config_path=path)
+    handed_over = window.collect_config()
+
+    assert handed_over["model"]["url"] == "http://custom-daemon:11434"
+    assert handed_over["cloud"]["max_retries"] == 0
+    assert handed_over["generation"]["input_char_budget"] == 1234
+
+    # and the values the worker actually derives from it
+    settings = ollama_settings_from_config(handed_over, mode="ollama_local")
+    assert settings.resolved_host == "http://custom-daemon:11434"
+    assert settings.max_retries == 0
+    limits = generation_settings_from_config(handed_over)
+    assert limits.input_char_budget == 1234
+    assert limits.job_timeout_s == 42
+
+
+def test_unknown_sections_survive_the_trip_to_the_worker(app, tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text(
+        yaml.safe_dump(
+            {"experimental": {"flag": True}, "rag": {"enabled": True, "top_k": 4}}
+        ),
+        encoding="utf-8",
+    )
+    handed_over = MainWindow(config_path=path).collect_config()
+    assert handed_over["experimental"] == {"flag": True}
+    assert handed_over["rag"] == {"enabled": True, "top_k": 4}
+
+
+def test_edited_fields_do_win_over_the_file(app, tmp_path):
+    path = tmp_path / "config.yml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "cloud": {"mode": "ollama_local", "read_timeout_s": 11},
+                "generation": {"max_cases_per_unit": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    window = MainWindow(config_path=path)
+    window.read_timeout.setValue(99.0)
+    window.max_cases_per_unit.setValue(8)
+
+    handed_over = window.collect_config()
+    assert handed_over["cloud"]["read_timeout_s"] == 99.0
+    assert handed_over["generation"]["max_cases_per_unit"] == 8
+
+
+def test_the_job_budget_is_written_back_where_it_came_from(app, tmp_path):
+    for section in ("cloud", "generation"):
+        path = tmp_path / f"{section}.yml"
+        path.write_text(
+            yaml.safe_dump({section: {"job_timeout_s": 42}}), encoding="utf-8"
+        )
+        window = MainWindow(config_path=path)
+        assert window.job_timeout.value() == 42, f"{section}: not shown in the window"
+        window.job_timeout.setValue(55)
+        handed_over = window.collect_config()
+        assert handed_over[section]["job_timeout_s"] == 55.0
+
+        from spec2test.bootstrap import generation_settings_from_config
+
+        assert generation_settings_from_config(handed_over).job_timeout_s == 55.0
 
 
 # =====================================================================
@@ -406,7 +511,11 @@ def test_a_run_without_a_model_name_is_refused(window, spec_a, no_modal_dialogs)
 # =====================================================================
 # model list
 # =====================================================================
-def test_building_the_window_performs_no_network_access(app, tmp_path, monkeypatch):
+@pytest.mark.parametrize("configured_mode", [None, "ollama_local", "ollama_cloud"])
+def test_building_the_window_performs_no_network_access(
+    app, tmp_path, monkeypatch, configured_mode
+):
+    """Applying a configuration must not contact the endpoint either."""
     started: list = []
     monkeypatch.setattr(workers.ModelListTask, "run", lambda self: started.append(self))
 
@@ -414,23 +523,93 @@ def test_building_the_window_performs_no_network_access(app, tmp_path, monkeypat
         raise AssertionError("the GUI thread must not open a connection")
 
     monkeypatch.setattr(workers, "list_models", refuse)
-    MainWindow(config_path=tmp_path / "config.yml")
-    assert started == [], "the list task must only start from the event loop"
+
+    path = tmp_path / "config.yml"
+    if configured_mode:
+        path.write_text(
+            yaml.safe_dump({"cloud": {"mode": configured_mode}}), encoding="utf-8"
+        )
+    window = MainWindow(config_path=path)
+    window._threadpool = SynchronousPool()
+
+    assert started == [], "construction must not contact the endpoint"
+    if configured_mode:
+        assert window.mode.currentText() == configured_mode
+
+    # once the event loop runs, exactly one refresh happens - for the
+    # configured mode, not for the combo box default
+    for _ in range(3):
+        QApplication.processEvents()
+    assert len(started) == 1
+    assert started[0].mode == (configured_mode or "ollama_local")
 
 
 def test_the_model_list_runs_in_a_background_task(window, monkeypatch):
-    seen: dict = {}
+    seen: list[dict] = []
 
     def fake_run(self):
-        seen["mode"] = self.mode
-        seen["timeouts"] = (self.CONNECT_TIMEOUT_S, self.READ_TIMEOUT_S)
+        seen.append(
+            {
+                "mode": self.mode,
+                "timeouts": (self.CONNECT_TIMEOUT_S, self.READ_TIMEOUT_S),
+            }
+        )
         self.signals.models.emit(["listed-a", "listed-b"])
 
     monkeypatch.setattr(workers.ModelListTask, "run", fake_run)
-    window.mode.setCurrentText("ollama_local")
-    assert seen["mode"] == "ollama_local"
-    assert seen["timeouts"] == (3.0, 5.0), "the list must use short timeouts"
+    assert window.mode.currentText() == "ollama_local", "default without a file"
+
+    window.mode.setCurrentText("ollama_cloud")  # a real change
+    assert seen, "the mode change must trigger a refresh"
+    assert seen[-1]["mode"] == "ollama_cloud", "the refresh used the wrong mode"
+    assert seen[-1]["timeouts"] == (3.0, 5.0), "the list must use short timeouts"
     assert window.model_name.count() == 2
+
+    window.mode.setCurrentText("ollama_local")
+    assert seen[-1]["mode"] == "ollama_local"
+
+
+def test_a_stale_window_cannot_pollute_a_later_refresh(app, tmp_path, monkeypatch):
+    """The reported flake: a pending timer of an earlier window fired later.
+
+    It then reported that window's mode and overwrote the observation of the
+    test that was actually running.
+    """
+    seen: list[str] = []
+    monkeypatch.setattr(
+        workers.ModelListTask, "run", lambda self: seen.append(self.mode)
+    )
+
+    stale_config = tmp_path / "stale.yml"
+    stale_config.write_text(
+        yaml.safe_dump({"cloud": {"mode": "ollama_cloud"}}), encoding="utf-8"
+    )
+    stale = MainWindow(config_path=stale_config)
+    stale._threadpool = SynchronousPool()
+    stale.close()  # its refresh is still queued at this point
+
+    current = MainWindow(config_path=tmp_path / "current.yml")
+    current._threadpool = SynchronousPool()
+    for _ in range(3):
+        QApplication.processEvents()
+
+    assert seen == ["ollama_local"], (
+        f"a closed window still triggered a refresh: {seen}"
+    )
+
+
+def test_a_deferred_refresh_is_dropped_when_the_window_closes(app, tmp_path, monkeypatch):
+    """A pending timer must not fire against a window that is already gone."""
+    started: list = []
+    monkeypatch.setattr(
+        workers.ModelListTask, "run", lambda self: started.append(self.mode)
+    )
+    window = MainWindow(config_path=tmp_path / "config.yml")
+    window._threadpool = SynchronousPool()
+    window.close()
+    for _ in range(3):
+        QApplication.processEvents()
+    assert started == [], "the deferred refresh outlived the window"
 
 
 def test_a_loading_state_is_visible_while_the_list_is_fetched(window, monkeypatch):

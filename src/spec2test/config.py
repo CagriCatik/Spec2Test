@@ -24,7 +24,9 @@ DEFAULT_NUM_THREAD: Optional[int] = None
 # Explicit operating modes; there is no implicit switching between them.
 MODE_CLOUD = "ollama_cloud"
 MODE_LOCAL = "ollama_local"
-DEFAULT_MODE = MODE_CLOUD
+# Without a configuration file the local daemon is the default: it needs no
+# credentials. ollama_cloud must be chosen deliberately.
+DEFAULT_MODE = MODE_LOCAL
 DEFAULT_CLOUD_HOST = "https://ollama.com"
 DEFAULT_CONNECT_TIMEOUT_S = 10.0
 DEFAULT_READ_TIMEOUT_S = 300.0

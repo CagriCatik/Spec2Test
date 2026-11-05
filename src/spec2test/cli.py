@@ -70,7 +70,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=[MODE_CLOUD, MODE_LOCAL],
         default=None,
-        help="default: the mode from config.yml, else ollama_cloud",
+        help="default: the mode from config.yml, else ollama_local",
     )
     models.add_argument("--model", default=None, help="check this name against the list")
     models.add_argument("--host", default=None)
@@ -86,7 +86,7 @@ def _resolve_mode(config: dict, requested: str | None, fallback: str) -> str:
 
 def _cmd_models(args) -> int:
     config = load_config(args.config)
-    args.mode = _resolve_mode(config, args.mode, MODE_CLOUD)
+    args.mode = _resolve_mode(config, args.mode, MODE_LOCAL)
     if args.mode not in (MODE_CLOUD, MODE_LOCAL):
         _out(f"mode {args.mode!r} has no model list; use ollama_cloud or ollama_local")
         return 1

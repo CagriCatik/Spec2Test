@@ -40,6 +40,14 @@ only place that builds `GenerationSettings`.
 changes live in the window; writing them back is an explicit action in the File
 menu, because the YAML writer cannot preserve the file's comments.
 
+The window keeps the loaded file and overlays only the fields it edits
+(`widget_overlay`). A setting without a widget - `model.url`,
+`cloud.max_retries`, the input budget, the legacy sections - reaches the worker
+unchanged instead of falling back to a default.
+
+Without any configuration the mode is `ollama_local`: it needs no credentials.
+`ollama_cloud` is always a deliberate choice.
+
 The domain imports no Qt, HTTP, PDF, Excel or even Pydantic. Qt signals and
 HTTP response objects never cross a port boundary: the application sees
 `ChatMessage`, `ModelReply` and `ImportedDocument`, never a `requests.Response`.
