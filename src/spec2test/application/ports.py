@@ -47,9 +47,17 @@ class ModelReply:
 
 
 class ModelError(RuntimeError):
-    """Base class for all model/transport failures surfaced to the application."""
+    """Base class for all model/transport failures surfaced to the application.
+
+    ``retryable``  the same request may be sent again after a backoff.
+    ``fatal``      a configuration or credential problem: retrying for every
+                   requirement would only repeat the same failure, so the run
+                   stops and the remaining requirements are recorded as not
+                   started.
+    """
 
     retryable = False
+    fatal = False
 
 
 @runtime_checkable

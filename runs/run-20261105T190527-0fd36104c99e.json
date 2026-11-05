@@ -1,0 +1,170 @@
+{
+  "store_version": "1",
+  "run": {
+    "run_id": "run-20261105T190527-0fd36104c99e",
+    "model": "stub-model:1b",
+    "endpoint": "https://ollama.com/api/chat",
+    "mode": "ollama_cloud",
+    "prompt_version": "l1-test-draft-1",
+    "schema_version": "1.0",
+    "source_hash": "ec45751a85a4699c1ceb66fc993e8e30a4d05c70d66549ace039c78c67d332be",
+    "parameters": {
+      "temperature": 0.0,
+      "top_p": 0.0,
+      "top_k": 1,
+      "num_predict": 256
+    },
+    "status": "failed",
+    "started_at": "2026-11-05T19:05:27+00:00",
+    "finished_at": "2026-11-05T19:05:27+00:00",
+    "planned_unit_count": 4,
+    "units": [
+      {
+        "unit_id": "U001",
+        "requirement_ids": [
+          "REQ-78b4542f-000056"
+        ],
+        "status": "rejected",
+        "source_spans": [
+          {
+            "document_id": "spec_pages-78b4542f",
+            "char_start": 56,
+            "char_end": 200,
+            "quote": "RAS-SW-REQ-0001: The rear axle steering shall follow the commanded rear wheel\nangle with a steady-state deviation of at most 0.2 deg at 50 km/h.",
+            "page": 1,
+            "section": null
+          }
+        ],
+        "test_cases": [],
+        "open_questions": [],
+        "attempts": [
+          {
+            "attempt": 1,
+            "prompt_version": "l1-test-draft-1",
+            "schema_version": "1.0",
+            "raw_response": "",
+            "issues": [],
+            "is_repair": false,
+            "error": "MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback",
+            "duration_s": 1.454213634133339e-05,
+            "truncated": false
+          }
+        ],
+        "issues": [
+          {
+            "code": "E_MODEL_CALL_FAILED",
+            "severity": "error",
+            "path": "U001",
+            "message": "MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback"
+          }
+        ],
+        "fatal_error": "MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback"
+      },
+      {
+        "unit_id": "U002",
+        "requirement_ids": [
+          "REQ-78b4542f-000259"
+        ],
+        "status": "not_started",
+        "source_spans": [
+          {
+            "document_id": "spec_pages-78b4542f",
+            "char_start": 259,
+            "char_end": 403,
+            "quote": "RAS-SW-REQ-0005: After detection of an actuator position sensor fault the\nsystem shall enter the degraded state within 100 ms and set DTC C1A27.",
+            "page": 2,
+            "section": null
+          }
+        ],
+        "test_cases": [],
+        "open_questions": [],
+        "attempts": [],
+        "issues": [
+          {
+            "code": "E_UNIT_NOT_STARTED",
+            "severity": "error",
+            "path": "U002",
+            "message": "no test draft was generated for this requirement: MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback"
+          }
+        ],
+        "fatal_error": null
+      },
+      {
+        "unit_id": "U003",
+        "requirement_ids": [
+          "REQ-78b4542f-000462"
+        ],
+        "status": "not_started",
+        "source_spans": [
+          {
+            "document_id": "spec_pages-78b4542f",
+            "char_start": 462,
+            "char_end": 604,
+            "quote": "RAS-SW-REQ-0010: Die Hinterachslenkung muss bei einer Geschwindigkeit von\nmehr als 120 km/h den Hinterradwinkel auf 1.0 deg begrenzen und den\n",
+            "page": 3,
+            "section": null
+          },
+          {
+            "document_id": "spec_pages-78b4542f",
+            "char_start": 606,
+            "char_end": 828,
+            "quote": "Synthetic RAS Specification - Page 4 of 5\nPAGE-MARKER-4\nbegrenzten Zustand ueber die CAN-Botschaft RAS_Status innerhalb von 50 ms\nmelden. Der Zustand bleibt aktiv, solange die Geschwindigkeit oberhalb des\nGrenzwerts liegt.",
+            "page": 4,
+            "section": null
+          }
+        ],
+        "test_cases": [],
+        "open_questions": [],
+        "attempts": [],
+        "issues": [
+          {
+            "code": "E_UNIT_NOT_STARTED",
+            "severity": "error",
+            "path": "U003",
+            "message": "no test draft was generated for this requirement: MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback"
+          }
+        ],
+        "fatal_error": null
+      },
+      {
+        "unit_id": "U004",
+        "requirement_ids": [
+          "REQ-78b4542f-000887"
+        ],
+        "status": "not_started",
+        "source_spans": [
+          {
+            "document_id": "spec_pages-78b4542f",
+            "char_start": 887,
+            "char_end": 997,
+            "quote": "RAS-SW-REQ-0007: The system shall limit the rear wheel angle to a safe value\nwhen the vehicle is driving fast.",
+            "page": 5,
+            "section": null
+          }
+        ],
+        "test_cases": [],
+        "open_questions": [],
+        "attempts": [],
+        "issues": [
+          {
+            "code": "E_UNIT_NOT_STARTED",
+            "severity": "error",
+            "path": "U004",
+            "message": "no test draft was generated for this requirement: MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback"
+          }
+        ],
+        "fatal_error": null
+      }
+    ],
+    "errors": [
+      "stopping the run after U001: MissingApiKeyError: mode ollama_cloud requires an API key in $OLLAMA_API_KEY; no request was sent and the local CLI is not used as a fallback"
+    ]
+  },
+  "summary": {
+    "status": "failed",
+    "test_case_drafts": 0,
+    "open_questions": 0,
+    "units_accepted": 0,
+    "units_rejected": 1
+  }
+}

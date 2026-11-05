@@ -198,10 +198,10 @@ def recording_worker(monkeypatch):
         ("ollama_local", "http://box.lan:11434", "http://box.lan:11434"),
     ],
 )
-def test_the_gui_hands_mode_host_and_timeouts_to_the_worker(
+def test_the_legacy_worker_also_receives_mode_host_and_timeouts(
     window, recording_worker, spec_pdf, mode, host, expected_host
 ):
-    """The review finding: the worker fell back to ollama_local."""
+    """The legacy entry point stays available for scripts and must agree."""
     import workers
 
     window.mode.setCurrentText(mode)
@@ -222,24 +222,159 @@ def test_the_gui_hands_mode_host_and_timeouts_to_the_worker(
     assert settings.model == "some-model:1b"
 
 
-def test_the_full_kick_off_path_carries_the_cloud_mode(
-    window, recording_worker, spec_pdf
+class SynchronousPool:
+    """Runs a QRunnable in the calling thread so the test can assert on it."""
+
+    def start(self, task):
+        task.run()
+
+
+@pytest.fixture
+def recording_draft_worker(monkeypatch):
+    """Record the settings the new pipeline hands to the model adapter."""
+    import workers
+
+    recorded: dict = {}
+    real_build_model = workers.build_model
+
+    def recording_build_model(mode, settings=None, **kwargs):
+        recorded["mode"] = mode
+        recorded["settings"] = settings
+        return real_build_model("fake")
+
+    monkeypatch.setattr(workers, "build_model", recording_build_model)
+    return recorded
+
+
+@pytest.mark.parametrize(
+    "mode,host,expected_host",
+    [
+        ("ollama_cloud", "", "https://ollama.com"),
+        ("ollama_cloud", "https://ollama.example", "https://ollama.example"),
+        ("ollama_local", "http://box.lan:11434", "http://box.lan:11434"),
+    ],
+)
+def test_the_new_pipeline_receives_mode_host_and_timeouts(
+    window, recording_draft_worker, spec_a, mode, host, expected_host
 ):
-    """Covers _kick_off itself, not just _collect_cfg."""
-
-    class SynchronousPool:
-        def start(self, task):
-            task.run()
-
+    """The review finding, for the pipeline the GUI now actually runs."""
+    window.mode.setCurrentText(mode)
+    window.host.setText(host)
+    window.connect_timeout.setValue(8.0)
+    window.read_timeout.setValue(99.0)
+    window.model_name.setCurrentText("some-model:1b")
     window._threadpool = SynchronousPool()
-    window._pdf_path = spec_pdf
-    window.mode.setCurrentText("ollama_cloud")
-    window.host.setText("")
+    window._spec_paths = [spec_a]
 
     window._kick_off()
 
-    assert recording_worker["settings"].mode == "ollama_cloud"
-    assert recording_worker["settings"].resolved_host == "https://ollama.com"
+    assert recording_draft_worker["mode"] == mode, "the configured mode was not used"
+    settings = recording_draft_worker["settings"]
+    assert settings.mode == mode
+    assert settings.resolved_host == expected_host
+    assert settings.connect_timeout_s == 8.0
+    assert settings.read_timeout_s == 99.0
+    assert settings.model == "some-model:1b"
+
+
+def test_the_gui_shows_drafts_requirements_and_sources(window, spec_a, monkeypatch):
+    """The migration itself: the new core's results reach the user."""
+    import workers
+
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+
+    monkeypatch.setattr(workers, "build_model", lambda *a, **k: RuleBasedFakeModel())
+    window._threadpool = SynchronousPool()
+    window._spec_paths = [spec_a]
+
+    window._kick_off()
+
+    assert window.requirements.topLevelItemCount() == 10, "requirements not shown"
+    assert window.drafts.topLevelItemCount() == 10, "drafts not shown"
+    assert "Drafts (10)" in window.tabs.tabText(0)
+    assert "Requirements (10)" in window.tabs.tabText(1)
+
+    first = window.drafts.topLevelItem(0)
+    labels = [first.child(i).text(0) for i in range(first.childCount())]
+    assert any(label.startswith("requirements:") for label in labels)
+    assert any(label.startswith("source:") for label in labels), "no source reference"
+    assert "steps" in labels
+    assert first.text(1).startswith("draft"), "a draft must never start as approved"
+
+    # the flat table still feeds the exporters
+    assert window.btn_save_csv.isEnabled()
+    assert window.table.model().rowCount() == 10
+
+
+def test_the_findings_tab_lists_open_questions(window, spec_a, monkeypatch):
+    import workers
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+
+    monkeypatch.setattr(workers, "build_model", lambda *a, **k: RuleBasedFakeModel())
+    window._threadpool = SynchronousPool()
+    window._spec_paths = [spec_a]
+    window._kick_off()
+
+    html = window.findings.toHtml()
+    assert "Open questions" in html
+    assert "Run report" in html
+    assert "completed" in html
+
+
+def test_a_missing_api_key_stops_the_run_instead_of_failing_per_requirement(
+    window, spec_a, monkeypatch
+):
+    import workers
+    from spec2test.adapters.ollama import MissingApiKeyError
+    from spec2test.application.ports import ModelDescriptor
+
+    calls = {"n": 0}
+
+    class KeylessCloud:
+        @property
+        def descriptor(self):
+            return ModelDescriptor(
+                model="m", endpoint="https://ollama.com/api/chat", mode="ollama_cloud"
+            )
+
+        def chat(self, messages, *, deadline=None):
+            calls["n"] += 1
+            raise MissingApiKeyError("no key")
+
+    monkeypatch.setattr(workers, "build_model", lambda *a, **k: KeylessCloud())
+    window._threadpool = SynchronousPool()
+    window._spec_paths = [spec_a]
+    window._kick_off()
+
+    assert calls["n"] == 1, "a missing key must not be retried for every requirement"
+    assert window._run.status.value == "failed"
+    assert len(window._run.not_started_units) == 9
+    assert "❌" in window.statusBar().currentMessage()
+
+
+def test_cancelling_marks_the_rest_as_not_started(window, spec_a, monkeypatch):
+    import workers
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+
+    monkeypatch.setattr(workers, "build_model", lambda *a, **k: RuleBasedFakeModel())
+    window._threadpool = SynchronousPool()
+    window._spec_paths = [spec_a]
+
+    real_task_holder: dict = {}
+    original = workers.DraftTask
+
+    class CancellingTask(original):
+        def run(self):
+            real_task_holder["task"] = self
+            self.cancel()  # cancelled before the first unit
+            super().run()
+
+    monkeypatch.setattr(workers, "DraftTask", CancellingTask)
+    monkeypatch.setattr("gui.DraftTask", CancellingTask)
+    window._kick_off()
+
+    assert window._run.status.value == "cancelled"
+    assert "⏹️" in window.statusBar().currentMessage()
 
 
 def test_gpu_options_are_not_sent_in_cloud_mode(window, recording_worker, spec_pdf):

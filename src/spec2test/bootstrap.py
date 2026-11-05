@@ -1,6 +1,7 @@
 """Load configuration and wire concrete adapters."""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -22,6 +23,51 @@ ALL_MODES = (MODE_CLOUD, MODE_LOCAL, MODE_FAKE)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yml"
 CONFIG_FILENAME = "config.yml"
+
+
+ENV_FILENAME = ".env"
+
+
+def load_env_file(path: Path | str | None = None, *, override: bool = False) -> list[str]:
+    """Read ``KEY=VALUE`` lines from a ``.env`` file into the environment.
+
+    Returns the names of the variables that were set - never their values, so a
+    caller cannot log a secret by accident. An already exported variable wins
+    unless ``override`` is set, and the file is never written to.
+
+    A tiny parser instead of a dependency: it handles comments, blank lines,
+    ``export`` prefixes and quoted values, which is all a key file needs.
+    """
+    candidates = (
+        [Path(path)]
+        if path is not None
+        else [Path.cwd() / ENV_FILENAME, PROJECT_ROOT / ENV_FILENAME]
+    )
+    env_path = next((c for c in candidates if c.exists()), None)
+    if env_path is None:
+        return []
+
+    applied: list[str] = []
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        name = name.strip()
+        if not name:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if name in os.environ and not override:
+            continue
+        os.environ[name] = value
+        applied.append(name)
+    return applied
 
 
 def default_config_path() -> Path | None:
@@ -112,6 +158,7 @@ def build_model(
     local run, and never starts the local Ollama CLI.
     """
     if mode == MODE_FAKE:
+        # offline stand-in; any settings are ignored on purpose
         return RuleBasedFakeModel()
     if mode not in (MODE_CLOUD, MODE_LOCAL):
         raise ValueError(f"mode must be one of {ALL_MODES}, got {mode!r}")

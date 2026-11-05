@@ -358,3 +358,49 @@ def test_document_content_cannot_override_the_generation_rules():
     system_message = model.calls[0][0].content
     assert "input data" in system_message
     assert "never change these rules" in system_message
+
+
+# ------------------------------------------------- fatal model errors --------
+def test_a_credential_error_stops_the_run_instead_of_repeating_per_requirement():
+    class NoKey(ModelError):
+        fatal = True
+
+    requirements = [requirement(f"REQ-{i}", f"SYS-REQ-{i:04d}") for i in range(1, 5)]
+    model = ScriptedModel([NoKey("no API key")] * 4)
+
+    run = generate_drafts(requirements, model)
+
+    assert model.call_count == 1, "a fatal error must not be retried per requirement"
+    assert run.status is RunStatus.FAILED
+    assert len(run.not_started_units) == 3
+    assert any("stopping the run" in error for error in run.errors)
+    codes = {issue.code for unit in run.units for issue in unit.issues}
+    assert {"E_MODEL_CALL_FAILED", "E_UNIT_NOT_STARTED"} <= codes
+
+
+def test_a_non_fatal_model_error_only_affects_its_own_unit():
+    class Hiccup(ModelError):
+        pass  # fatal defaults to False
+
+    requirements = [requirement("REQ-1", "SYS-REQ-0001"), requirement("REQ-2", "SYS-REQ-0002")]
+    model = ScriptedModel([Hiccup("one bad call"), answer(refs=("SYS-REQ-0002",))])
+
+    run = generate_drafts(requirements, model)
+
+    assert model.call_count == 2, "the next requirement is still attempted"
+    assert run.status is RunStatus.PARTIAL
+    assert run.not_started_units == []
+
+
+def test_a_fatal_error_reports_progress_as_stopped():
+    class NoKey(ModelError):
+        fatal = True
+
+    updates: list[ProgressUpdate] = []
+    generate_drafts(
+        [requirement("REQ-1", "SYS-REQ-0001"), requirement("REQ-2", "SYS-REQ-0002")],
+        ScriptedModel([NoKey("no key")] * 2),
+        progress=updates.append,
+    )
+    assert updates[-1].note == "stopped"
+    assert updates[-1].percent == 100

@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Secrets - never commit the API key
+.env
+*.env
+!.env.example
+
 # Virtual environment
 venv/
 .env/

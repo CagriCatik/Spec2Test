@@ -184,6 +184,24 @@ def generate_drafts(
 
         result = _process_unit(unit, model, settings, deadline, log)
         run.units.append(result)
+        if result.fatal_error:
+            run.errors.append(
+                f"stopping the run after {unit.unit_id}: {result.fatal_error}"
+            )
+            _log(log, f"run {run.run_id}: {run.errors[-1]}")
+            remaining = units[index:]
+            if remaining:
+                run.units.extend(_not_started(remaining, result.fatal_error))
+            if progress:
+                progress(
+                    ProgressUpdate(
+                        done=len(units),
+                        total=len(units),
+                        unit_id=unit.unit_id,
+                        note="stopped",
+                    )
+                )
+            break
         if progress:
             progress(
                 ProgressUpdate(
@@ -265,6 +283,8 @@ def _process_unit(
             deadline.check(f"unit {unit.unit_id}")
             reply = model.chat(messages, deadline=deadline)
         except (ModelError, DeadlineExceeded) as exc:
+            if getattr(exc, "fatal", False):
+                result.fatal_error = f"{type(exc).__name__}: {exc}"
             result.attempts.append(
                 GenerationAttempt(
                     attempt=attempt_no,

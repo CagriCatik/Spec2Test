@@ -251,6 +251,9 @@ class GenerationUnitResult:
     open_questions: list[OpenQuestion] = field(default_factory=list)
     attempts: list[GenerationAttempt] = field(default_factory=list)
     issues: list[ValidationIssue] = field(default_factory=list)
+    #: set when the failure makes every further unit pointless (credentials,
+    #: configuration); the run stops instead of repeating the same error
+    fatal_error: str | None = None
 
     @property
     def rejected(self) -> bool:

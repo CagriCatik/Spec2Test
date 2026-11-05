@@ -25,6 +25,7 @@ from .bootstrap import (
     build_model,
     generation_settings_from_config,
     load_config,
+    load_env_file,
     ollama_settings_from_config,
 )
 from .domain.models import RunStatus
@@ -215,6 +216,10 @@ def _cmd_run(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # a .env in the working directory may provide OLLAMA_API_KEY; only the
+    # variable names are reported, never their values
+    for name in load_env_file():
+        _out(f"loaded {name} from .env")
     if args.command == "run":
         return _cmd_run(args)
     if args.command == "models":

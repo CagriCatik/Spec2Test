@@ -21,6 +21,7 @@ from ..domain.models import (
     GenerationUnitResult,
     Severity,
     SourceSpan,
+    TestCase,
     UnitStatus,
     ValidationIssue,
 )
@@ -342,3 +343,37 @@ def _default_prompt(block: Block, total: int, n_cases: int) -> str:
         f"Requirements excerpt ({block.index}/{total}, {block.label()}):\n"
         f"{block.text}\n-----"
     )
+
+
+def legacy_rows(cases: Sequence[TestCase]) -> list[dict]:
+    """Flatten new test drafts into the historical flat shape.
+
+    Interim export for the existing CSV/Excel buttons. Actions and expectations
+    keep their step number as a prefix, so the pairing survives the flattening
+    instead of degrading into two unrelated lists. A real export with separate
+    tables for steps and requirement links is AP 6.
+    """
+    rows: list[dict] = []
+    for case in cases:
+        actions: list[str] = []
+        expectations: list[str] = []
+        for step in case.steps:
+            actions.append(f"{step.order}. {step.action}")
+            for expectation in step.expectations:
+                expectations.append(f"{step.order}. {expectation}")
+        rows.append(
+            {
+                "testcase_name": case.title,
+                "objective": case.objective,
+                "linked_requirements": list(case.requirement_ids),
+                "preconditions": [
+                    f"{step.order}. {step.action}" for step in case.preconditions
+                ],
+                "actions": actions,
+                "expected_results": expectations,
+                "postconditions": [
+                    f"{step.order}. {step.action}" for step in case.postconditions
+                ],
+            }
+        )
+    return rows

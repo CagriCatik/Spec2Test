@@ -349,6 +349,16 @@ The API key is read from the environment only. It is never written to
 `config.yml`, never logged, removed from error messages, and sent only to the
 configured host; redirects are not followed.
 
+Provide the key either by exporting it or through a git-ignored `.env` file in
+the working directory:
+
+```bash
+cp .env.example .env && $EDITOR .env    # OLLAMA_API_KEY=...
+```
+
+An already exported variable always wins over the file. Only the variable name
+is ever logged, never the value.
+
 ```bash
 export OLLAMA_API_KEY=...          # cloud mode only
 
@@ -369,6 +379,19 @@ Without installing the package, run it from the repository root with
 The mode, host and timeouts live in `config.yml` and are used by the GUI, the
 Qt worker and the CLI alike. In the GUI they are in the **Endpoint** group; GPU
 options are disabled in cloud mode, because they only apply locally.
+
+The GUI runs this same pipeline: load one or more PDF, TXT or Markdown files,
+press **Generate**, and the result appears in four tabs - **Drafts** (test
+cases with their preconditions, steps, expectations, measurements and open
+questions), **Requirements** (what was captured, with the source position of
+every requirement), **Findings** (the run report, open questions, rejected and
+unprocessed requirements) and **Flat table** (which feeds the CSV/Excel
+buttons). **Cancel** stops new requests; a running request ends within its
+timeout.
+
+A credential or host misconfiguration stops the whole run after the first
+failure instead of repeating it for every requirement; the remaining
+requirements are listed as `NOT STARTED`.
 
 Exit codes: `0` completed, `2` partial, `3` cancelled, `1` failed. A progress
 value of 100 % only means the processing ended - the run status says whether it

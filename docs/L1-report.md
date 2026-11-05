@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  437 bestanden, 5 übersprungen
+pytest -q  →  457 bestanden, 5 übersprungen
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -331,6 +331,61 @@ $ echo $?
 Der Nachweis steht damit aus und braucht einen Schlüssel in der Umgebung. Der
 frühere Aufruf über einen lokalen Ollama-Server mit Cloud-Modell ersetzt ihn
 nicht – das ist im Review zu Recht festgehalten.
+
+## 11 GUI-Migration und Schlüsselanbindung
+
+### API-Key über `.env`
+
+`bootstrap.load_env_file` liest `KEY=VALUE`-Zeilen aus einer `.env` im
+Arbeitsverzeichnis in die Umgebung – Kommentare, Leerzeilen, `export`-Präfixe
+und Anführungszeichen inbegriffen. Die Funktion gibt **nur die Variablennamen**
+zurück, nie die Werte, damit ein Aufrufer keinen Schlüssel versehentlich
+protokollieren kann. Eine bereits exportierte Variable gewinnt. Ein ~20-zeiliger
+Parser statt einer neuen Abhängigkeit.
+
+`.env.example` ist die Vorlage, `.env` ist in `.gitignore` aufgenommen
+(`!.env.example` als Ausnahme). CLI und GUI-Worker laden die Datei beim Start
+und melden nur den Namen der gesetzten Variable.
+
+### GUI auf die neue Pipeline umgestellt
+
+`workers.DraftTask` ersetzt `GeneratorTask` als Aktion der GUI: Dokumentimport,
+`generate_drafts()`, strikte Validierung und Ablage des Laufs. `GeneratorTask`
+bleibt als dokumentierter Legacy-Einstieg für Skripte erhalten.
+
+* **Dateiauswahl** nimmt jetzt PDF, TXT und Markdown und mehrere Dateien
+  gleichzeitig.
+* **Vier Ansichten**: *Drafts* (Testfall mit Vor-/Nachbedingungen, Schritten,
+  Erwartungen, Messgrößen samt Belegzitat und offenen Fragen), *Requirements*
+  (erfasste Anforderungen mit Quellstelle je Seite/Abschnitt und
+  Klärungsstatus), *Findings* (Laufbericht, offene Fragen, zurückgewiesene und
+  nicht gestartete Anforderungen mit Quellreferenz), *Flat table* (speist die
+  bestehenden CSV-/Excel-Schaltflächen und das Insight-Panel).
+* **Abbruch** über eine eigene Schaltfläche: keine neuen Requests, ein
+  laufender endet in seinem Zeitlimit; der Lauf wird als `cancelled` angezeigt.
+* `application.legacy.legacy_rows` flacht die neuen Entwürfe für den Export ab
+  und behält die Zuordnung, indem Aktionen und Erwartungen ihre Schrittnummer
+  als Präfix tragen. Ein echter Export mit getrennten Tabellen bleibt AP 6.
+
+### Zusätzlich gefunden: Auth-Fehler wurden pro Anforderung wiederholt
+
+Beim ersten GUI-Durchlauf ohne Schlüssel erzeugte ein fehlender API-Key zehn
+identische Fehlschläge – einen pro Anforderung. `ModelError` hat deshalb neben
+`retryable` jetzt ein Flag `fatal`, gesetzt für `MissingApiKeyError`,
+`AuthenticationError` und `RedirectNotFollowedError`. Die Generierung bricht
+nach dem ersten solchen Fehler ab und erfasst die restlichen Anforderungen als
+`NOT_STARTED`. Das Flag liegt im Port, nicht im Adapter-Wissen der Anwendung.
+
+Ebenfalls korrigiert: `_kick_off` setzte die Statuszeile erst nach dem Start des
+Tasks, was die Abschlussmeldung bei synchroner Ausführung überschrieb.
+
+Teststand: **457 bestanden, 5 übersprungen** (neu: `tests/test_env.py`,
+erweiterte GUI- und Generierungstests).
+
+### Noch offen in der GUI
+
+Entwürfe sind nur lesbar: Bearbeiten, Freigeben und das Wiederöffnen eines
+gespeicherten Projekts samt Revisionen sind die nächsten Schritte (AP 5).
 
 ## 9 Commits
 

@@ -48,11 +48,15 @@ class OllamaError(ModelError):
 
 
 class MissingApiKeyError(OllamaError):
-    pass
+    """No key configured: every further request would fail the same way."""
+
+    fatal = True
 
 
 class AuthenticationError(OllamaError):
-    pass
+    """Rejected credentials are not a per-requirement problem."""
+
+    fatal = True
 
 
 class RateLimitError(OllamaError):
@@ -81,6 +85,8 @@ class ConnectionFailedError(OllamaError):
 
 class RedirectNotFollowedError(OllamaError):
     """A redirect is not followed, so the API key never leaves its host."""
+
+    fatal = True  # the host is misconfigured; retrying per requirement is futile
 
 
 class ProtocolError(OllamaError):

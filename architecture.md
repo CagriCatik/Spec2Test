@@ -14,7 +14,13 @@ enforces it by parsing the imports of every module.
 | Domain | `src/spec2test/domain/` | Data model and rules | nothing but itself |
 | Application | `src/spec2test/application/` | Use cases and ports | domain |
 | Adapters | `src/spec2test/adapters/` | HTTP, documents, storage, fakes | domain, application |
-| UI | `gui.py`, `workers.py`, `qmodels.py` | PySide6 views and Qt workers | application via `core.py` |
+| UI | `gui.py`, `workers.py`, `qmodels.py` | PySide6 views and Qt workers | application and adapters |
+
+`workers.DraftTask` runs the pipeline for the GUI: import, generate, validate,
+store. `workers.GeneratorTask` is the legacy flat path, still available for
+scripts. `config_models.CloudConfig` carries mode, host and timeouts, and GUI,
+worker and CLI all turn it into `OllamaSettings` through
+`bootstrap.ollama_settings_from_config`, so the three cannot drift apart.
 
 The domain imports no Qt, HTTP, PDF, Excel or even Pydantic. Qt signals and
 HTTP response objects never cross a port boundary: the application sees
@@ -145,6 +151,17 @@ Error mapping: 401/403 → `AuthenticationError` (no retry), 404 →
 408/5xx and connection or timeout errors → bounded retries with backoff. Each
 retry is logged with a note that it can cause additional usage.
 
+A `ModelError` carries two flags. `retryable` means the same request may be
+sent again after a backoff. `fatal` means a credential or host problem, which
+no other requirement can get past: the run stops after the first such failure
+and the remaining requirements are recorded as `NOT_STARTED` instead of
+repeating the same error for each one.
+
+The key may also come from a git-ignored `.env` file in the working directory
+(`bootstrap.load_env_file`, a ~20-line parser rather than a dependency). It
+returns only the variable names it set, so a caller cannot log a secret by
+accident, and an already exported variable wins.
+
 ## End-to-end flow
 
 ```mermaid
@@ -198,6 +215,10 @@ PyPDF2 was removed: PDF reading is unified on PyMuPDF.
 
 ## Deliberately not in this delivery
 
-Model-assisted requirement segmentation, review and coverage views, project
-persistence with revisions, Excel export of steps and links, streaming, RAG,
-parallelisation, OCR and a GUI rebuild. See the work packages for AP 4 to AP 6.
+Model-assisted requirement segmentation, editing and approval in the GUI,
+project persistence with revisions and reopening, Excel export with separate
+tables for steps and requirement links, coverage metrics, streaming, RAG,
+parallelisation, OCR and a GUI rebuild. See the work packages AP 4 to AP 6.
+
+The GUI shows drafts, sources, findings and open questions read-only. Approving
+or editing a draft, and reopening a stored project, are the next steps.

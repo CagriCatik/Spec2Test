@@ -22,6 +22,9 @@ from PySide6.QtCore import QSettings, QThreadPool, Qt
 from PySide6.QtGui import QIcon, QCursor, QAction
 from PySide6.QtWidgets import (
     QLineEdit,
+    QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -59,7 +62,8 @@ from spec2test.adapters.ollama import (  # model list via /api/tags
     list_models,
 )
 from spec2test.bootstrap import ollama_settings_from_config
-from workers import GeneratorTask  # background worker
+from workers import DraftTask, GeneratorTask  # background workers
+from spec2test.application.legacy import legacy_rows
 from qmodels import TestCaseTableModel  # table model wrapper
 from config_models import (
     DEFAULT_CONNECT_TIMEOUT_S,
@@ -114,6 +118,9 @@ class MainWindow(QMainWindow):
         # runtime state
         self._threadpool = QThreadPool.globalInstance()
         self._settings = QSettings("acme", "tcg_gui")
+        self._spec_paths: list[Path] = []
+        self._run = None
+        self._task = None
         self._pdf_path: Path | None = None
         self._prompt_path: Path | None = None
         self._cases: list[dict] = []
@@ -471,7 +478,7 @@ class MainWindow(QMainWindow):
         vb_in = QVBoxLayout(gb_in)
 
         # Create buttons and keep references
-        btn_pdf = QPushButton("📄 Load PDF…", clicked=self._select_pdf, parent=gb_in)
+        btn_pdf = QPushButton("📄 Load spec…", clicked=self._select_pdf, parent=gb_in)
         btn_prompt = QPushButton("💬 Load Prompt…", clicked=self._select_prompt, parent=gb_in)
 
         # Ensure they expand similarly
@@ -525,15 +532,42 @@ class MainWindow(QMainWindow):
             }
         """)
         self.btn_run = QPushButton("Generate", clicked=self._kick_off)
-        hb_run.addWidget(self.pb, 1); hb_run.addWidget(self.btn_run)
+        self.btn_cancel = QPushButton("Cancel", clicked=self._cancel_run)
+        self.btn_cancel.setEnabled(False)
+        hb_run.addWidget(self.pb, 1)
+        hb_run.addWidget(self.btn_run)
+        hb_run.addWidget(self.btn_cancel)
         v.addWidget(gb_run)
         v.addStretch()
 
         # ---------- right‑hand preview ----------
         preview = QWidget(); pv = QVBoxLayout(preview)
+
+        self.tabs = QTabWidget()
+
+        # test drafts with their steps, expectations and open questions
+        self.drafts = QTreeWidget()
+        self.drafts.setHeaderLabels(["Test draft", "Status"])
+        self.drafts.setColumnWidth(0, 520)
+        self.tabs.addTab(self.drafts, "🧪 Drafts")
+
+        # captured requirements with their source positions
+        self.requirements = QTreeWidget()
+        self.requirements.setHeaderLabels(["Requirement / source", "Clarification"])
+        self.requirements.setColumnWidth(0, 520)
+        self.tabs.addTab(self.requirements, "🔗 Requirements")
+
+        # validation findings, rejected and unprocessed requirements
+        self.findings = QTextBrowser()
+        self.findings.setHtml("<p><em>Generate drafts to see the findings.</em></p>")
+        self.tabs.addTab(self.findings, "🔍 Findings")
+
+        # flat table: feeds the exporters and the insight panel
         self.table = QTableView(); self.table.setModel(TestCaseTableModel())
         self.table.horizontalHeader().setStretchLastSection(True)
-        pv.addWidget(self.table)
+        self.tabs.addTab(self.table, "📋 Flat table")
+
+        pv.addWidget(self.tabs)
 
         gb_summary = QGroupBox("📈 Insights")
         sum_layout = QVBoxLayout(gb_summary)
@@ -614,11 +648,24 @@ class MainWindow(QMainWindow):
 
     # ----------------------- file selection -------------------------------
     def _select_pdf(self):
-        fn, _ = QFileDialog.getOpenFileName(self, "Select requirements PDF", filter="PDF (*.pdf)")
-        if fn:
-            self._pdf_path = Path(fn)
-            self.lbl_pdf.setText(self._pdf_path.name)
-            self._log(f"📄 PDF selected: {self._pdf_path.name}")
+        """Select one or more specifications: PDF, TXT or Markdown."""
+        names, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select requirement documents",
+            filter="Specifications (*.pdf *.txt *.md *.markdown);;All files (*)",
+        )
+        if not names:
+            return
+        self._spec_paths = [Path(n) for n in names]
+        self._pdf_path = self._spec_paths[0]  # kept for the legacy path
+        label = (
+            self._spec_paths[0].name
+            if len(self._spec_paths) == 1
+            else f"{len(self._spec_paths)} documents"
+        )
+        self.lbl_pdf.setText(label)
+        for path in self._spec_paths:
+            self._log(f"📄 Selected: {path.name}")
 
     def _select_prompt(self):
         fn, _ = QFileDialog.getOpenFileName(self, "Select role‑prompt file", filter="Text (*.txt)")
@@ -628,24 +675,204 @@ class MainWindow(QMainWindow):
             self._log(f"📝 Prompt file: {self._prompt_path.name}")
 
     # ----------------------------- run ------------------------------------
+    def _specs(self) -> list[Path]:
+        paths = list(getattr(self, "_spec_paths", []) or [])
+        if not paths and self._pdf_path:
+            paths = [self._pdf_path]
+        return paths
+
     def _kick_off(self):
-        if not self._pdf_path:
-            QMessageBox.warning(self, "Missing PDF", "Load a PDF first.")
+        """Run the traceable pipeline: import, generate, validate, store."""
+        specs = self._specs()
+        if not specs:
+            QMessageBox.warning(
+                self, "No document", "Load a PDF, TXT or Markdown file first."
+            )
             return
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         self.pb.setValue(0)
-        self._start_time = time.perf_counter()      # start the clock
+        self._start_time = time.perf_counter()
+        self._run = None
         self.summary.setHtml("<p><em>Generating…</em></p>")
+        self.findings.setHtml("<p><em>Running…</em></p>")
+        self.drafts.clear()
+        self.requirements.clear()
 
-        cfg = self._collect_cfg()
-        task = GeneratorTask(pdf=self._pdf_path, cfg=cfg)
+        task = DraftTask(specs, self._collect_cfg())
+        self._task = task
         task.signals.progress.connect(self.pb.setValue)
         task.signals.message.connect(self._log)
-        task.signals.status.connect(self._on_status)
-        task.signals.finished.connect(self._on_done)
-        task.signals.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
-        self._threadpool.start(task)
+        task.signals.requirements.connect(self._show_requirements)
+        task.signals.finished.connect(self._on_run_finished)
+        task.signals.error.connect(self._on_error)
+        self.btn_cancel.setEnabled(True)
+        # announce before starting, so the final message is never overwritten
         self.statusBar().showMessage("Generation running…")
+        self._threadpool.start(task)
+
+    def _cancel_run(self) -> None:
+        task = getattr(self, "_task", None)
+        if task is not None:
+            task.cancel()
+            self._log("⏹️ Cancelling: no new requests; a running one ends on timeout.")
+            self.btn_cancel.setEnabled(False)
+
+    def _on_error(self, message: str) -> None:
+        QApplication.restoreOverrideCursor()
+        self.btn_cancel.setEnabled(False)
+        self.statusBar().showMessage(f"❌ {message}")
+        self.findings.setHtml(f"<p><b>Error:</b> {message}</p>")
+        QMessageBox.critical(self, "Error", message)
+
+    # ------------------------- result views -------------------------------
+    def _show_requirements(self, requirements) -> None:
+        """Captured requirements with their source positions."""
+        self.requirements.clear()
+        for req in requirements:
+            top = QTreeWidgetItem(
+                [req.external_id or req.display_id(), req.clarification_status.value]
+            )
+            top.addChild(QTreeWidgetItem([req.text.strip()[:400], ""]))
+            for span in req.spans:
+                child = QTreeWidgetItem([f"source: {span.label()}", ""])
+                child.setToolTip(0, span.quote[:800])
+                top.addChild(child)
+            for note in req.notes:
+                top.addChild(QTreeWidgetItem([f"note: {note}", ""]))
+            top.setToolTip(0, f"internal ID: {req.requirement_id}")
+            self.requirements.addTopLevelItem(top)
+        self.tabs.setTabText(1, f"🔗 Requirements ({len(requirements)})")
+
+    def _show_drafts(self, run) -> None:
+        self.drafts.clear()
+        for case in run.test_cases:
+            top = QTreeWidgetItem(
+                [case.title, f"{case.review_status.value} rev{case.revision}"]
+            )
+            top.addChild(
+                QTreeWidgetItem([f"objective: {case.objective}", ""])
+            )
+            top.addChild(
+                QTreeWidgetItem(
+                    [f"requirements: {', '.join(case.requirement_ids)}", ""]
+                )
+            )
+            for span in case.source_spans:
+                item = QTreeWidgetItem([f"source: {span.label()}", ""])
+                item.setToolTip(0, span.quote[:800])
+                top.addChild(item)
+            for label, steps in (
+                ("preconditions", case.preconditions),
+                ("steps", case.steps),
+                ("postconditions", case.postconditions),
+            ):
+                if not steps:
+                    continue
+                group = QTreeWidgetItem([label, f"{len(steps)}"])
+                for step in steps:
+                    node = QTreeWidgetItem([f"{step.order}. {step.action}", ""])
+                    for expectation in step.expectations:
+                        node.addChild(QTreeWidgetItem([f"expect: {expectation}", ""]))
+                    for measurement in step.measurements:
+                        node.addChild(
+                            QTreeWidgetItem(
+                                [
+                                    f"measure: {measurement.quantity} = "
+                                    f"{measurement.value} {measurement.unit or ''}".strip(),
+                                    measurement.evidence or "no evidence",
+                                ]
+                            )
+                        )
+                    group.addChild(node)
+                top.addChild(group)
+            if case.open_questions:
+                group = QTreeWidgetItem(
+                    ["open questions", str(len(case.open_questions))]
+                )
+                for question in case.open_questions:
+                    node = QTreeWidgetItem([question.question, question.origin.value])
+                    if question.suggestion:
+                        node.addChild(
+                            QTreeWidgetItem(
+                                [f"proposal (not a specification): {question.suggestion}", ""]
+                            )
+                        )
+                    group.addChild(node)
+                top.addChild(group)
+            self.drafts.addTopLevelItem(top)
+        self.drafts.expandToDepth(0)
+        self.tabs.setTabText(0, f"🧪 Drafts ({len(run.test_cases)})")
+
+    def _show_findings(self, run) -> None:
+        parts = ["<h3>Run report</h3><pre>"]
+        parts.extend(line.replace("<", "&lt;") for line in run.report_lines())
+        parts.append("</pre>")
+
+        if run.open_questions:
+            parts.append("<h3>Open questions</h3><ul>")
+            for question in run.open_questions:
+                parts.append(
+                    f"<li><b>{question.origin.value}</b>: "
+                    f"{question.question}</li>".replace("<li><b", "<li><b")
+                )
+            parts.append("</ul>")
+
+        blocked = [u for u in run.units if u.status.value in ("rejected", "not_started")]
+        if blocked:
+            parts.append("<h3>Not usable</h3><ul>")
+            for unit in blocked:
+                refs = ", ".join(span.label() for span in unit.source_spans) or "no span"
+                parts.append(
+                    f"<li><b>{unit.status.value}</b> {unit.unit_id} "
+                    f"[{', '.join(unit.requirement_ids)}] ({refs})<ul>"
+                )
+                for issue in unit.issues:
+                    parts.append(f"<li>{str(issue)}</li>")
+                parts.append("</ul></li>")
+            parts.append("</ul>")
+
+        if len(parts) == 3:
+            parts.append("<p><em>No findings.</em></p>")
+        self.findings.setHtml("".join(parts))
+        self.tabs.setTabText(2, f"🔍 Findings ({len(run.open_questions) + len(blocked)})")
+
+    def _on_run_finished(self, run) -> None:
+        QApplication.restoreOverrideCursor()
+        self.btn_cancel.setEnabled(False)
+        self._run = run
+
+        elapsed = None
+        if self._start_time is not None:
+            elapsed = time.perf_counter() - self._start_time
+            self._start_time = None
+
+        self._show_drafts(run)
+        self._show_findings(run)
+        # the flat rows keep the existing exporters and the insight panel working
+        self._cases = legacy_rows(run.test_cases)
+        self.table.model().update_cases(self._cases)
+        self.btn_save_csv.setEnabled(bool(self._cases))
+        self.btn_save_xlsx.setEnabled(bool(self._cases))
+        self._render_summary()
+
+        icon = {
+            "completed": "✅",
+            "partial": "⚠️",
+            "failed": "❌",
+            "cancelled": "⏹️",
+        }.get(run.status.value, "ℹ️")
+        msg = (
+            f"{icon} Run {run.status.value}: {len(run.test_cases)} draft(s), "
+            f"{len(run.open_questions)} open question(s)"
+        )
+        if run.rejected_units:
+            msg += f", {len(run.rejected_units)} rejected"
+        if run.not_started_units:
+            msg += f", {len(run.not_started_units)} not started"
+        if elapsed is not None:
+            msg += f". ⏱️ {elapsed:.1f} s"
+        self._log(msg)
+        self.statusBar().showMessage(msg)
 
     def _on_status(self, status: dict) -> None:
         """Remember the run status so the result is not reported as success."""
