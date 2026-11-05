@@ -18,6 +18,16 @@ DEFAULT_MAIN_GPU: Optional[int] = None
 DEFAULT_GPU_LAYERS: Optional[int] = None
 DEFAULT_NUM_THREAD: Optional[int] = None
 
+# Explicit operating modes; there is no implicit switching between them.
+MODE_CLOUD = "ollama_cloud"
+MODE_LOCAL = "ollama_local"
+DEFAULT_MODE = MODE_CLOUD
+DEFAULT_CLOUD_HOST = "https://ollama.com"
+DEFAULT_CONNECT_TIMEOUT_S = 10.0
+DEFAULT_READ_TIMEOUT_S = 300.0
+DEFAULT_MAX_RETRIES = 2
+DEFAULT_JOB_TIMEOUT_S = 900.0
+
 DEFAULT_CACHE_ENABLED = False
 DEFAULT_CACHE_MAX_ENTRIES = 256
 DEFAULT_CACHE_MAX_AGE_HOURS: Optional[int] = 24
@@ -81,6 +91,55 @@ class ModelConfig:
             "main_gpu": self.main_gpu,
             "gpu_layers": self.gpu_layers,
             "num_thread": self.num_thread,
+        }
+
+
+@dataclass
+class CloudConfig:
+    """Endpoint and transport settings shared by the GUI, the worker and the CLI.
+
+    The API key is never part of this object: it is read from $OLLAMA_API_KEY.
+    """
+
+    mode: str = DEFAULT_MODE
+    host: Optional[str] = None
+    connect_timeout_s: float = DEFAULT_CONNECT_TIMEOUT_S
+    read_timeout_s: float = DEFAULT_READ_TIMEOUT_S
+    max_retries: int = DEFAULT_MAX_RETRIES
+    job_timeout_s: Optional[float] = DEFAULT_JOB_TIMEOUT_S
+
+    @property
+    def is_cloud(self) -> bool:
+        return self.mode == MODE_CLOUD
+
+    def resolved_host(self, local_url: str = DEFAULT_OLLAMA_URL) -> str:
+        """The host actually used for this mode."""
+        if self.host:
+            return self.host.rstrip("/")
+        return DEFAULT_CLOUD_HOST if self.is_cloud else local_url.rstrip("/")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any] | None) -> "CloudConfig":
+        if not data:
+            data = {}
+        mapping = {
+            "mode": data.get("mode"),
+            "host": data.get("host"),
+            "connect_timeout_s": data.get("connect_timeout_s"),
+            "read_timeout_s": data.get("read_timeout_s"),
+            "max_retries": data.get("max_retries"),
+            "job_timeout_s": data.get("job_timeout_s"),
+        }
+        return cls(**{k: v for k, v in mapping.items() if v is not None})
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "host": self.host,
+            "connect_timeout_s": self.connect_timeout_s,
+            "read_timeout_s": self.read_timeout_s,
+            "max_retries": self.max_retries,
+            "job_timeout_s": self.job_timeout_s,
         }
 
 
@@ -206,6 +265,7 @@ class AppConfig:
     """Full configuration snapshot used by the worker pipeline."""
 
     model: ModelConfig = field(default_factory=ModelConfig)
+    cloud: CloudConfig = field(default_factory=CloudConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     rag: RagConfig = field(default_factory=RagConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
@@ -217,9 +277,10 @@ class AppConfig:
         if not data:
             data = {}
 
-        if any(key in data for key in ("model", "generation", "rag", "paths")):
+        if any(key in data for key in ("model", "generation", "rag", "paths", "cloud")):
             return cls(
                 model=ModelConfig.from_dict(data.get("model")),
+                cloud=CloudConfig.from_dict(data.get("cloud")),
                 generation=GenerationConfig.from_dict(data.get("generation")),
                 rag=RagConfig.from_dict(data.get("rag")),
                 cache=CacheConfig.from_dict(data.get("cache")),
@@ -229,6 +290,7 @@ class AppConfig:
         # Fallback: historical flat config.yml structure
         return cls(
             model=ModelConfig.from_dict(data),
+            cloud=CloudConfig.from_dict(data),
             generation=GenerationConfig.from_dict(data),
             rag=RagConfig.from_dict(data),
             cache=CacheConfig.from_dict(data),
@@ -238,6 +300,7 @@ class AppConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "model": self.model.to_dict(),
+            "cloud": self.cloud.to_dict(),
             "generation": self.generation.to_dict(),
             "rag": self.rag.to_dict(),
             "cache": self.cache.to_dict(),

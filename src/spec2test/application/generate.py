@@ -6,6 +6,7 @@ Nothing here knows about HTTP, Qt, PDF or Excel.
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Sequence
@@ -116,6 +117,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def new_run_id(prefix: str = "run") -> str:
+    """Sortable and collision-free: two runs in the same second stay distinct."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return f"{prefix}-{stamp}-{uuid.uuid4().hex[:12]}"
+
+
 def generate_drafts(
     requirements: Sequence[Requirement],
     model: ModelPort,
@@ -130,7 +137,7 @@ def generate_drafts(
     settings = settings or GenerationSettings()
     descriptor = model.descriptor
     run = GenerationRun(
-        run_id=run_id or f"run-{int(time.time())}",
+        run_id=run_id or new_run_id(),
         model=descriptor.model,
         endpoint=descriptor.endpoint,
         mode=descriptor.mode,
@@ -142,6 +149,7 @@ def generate_drafts(
     )
     deadline = Deadline(settings.job_timeout_s)
     units = plan_units(requirements, settings)
+    run.planned_unit_count = len(units)
     cancelled = False
 
     _log(
@@ -153,15 +161,25 @@ def generate_drafts(
     for index, unit in enumerate(units, 1):
         if should_cancel and should_cancel():
             cancelled = True
-            _log(log, f"run {run.run_id}: cancelled before unit {unit.unit_id}")
+            reason = "the run was cancelled"
+            run.errors.append(
+                f"cancelled before unit {unit.unit_id}; "
+                f"{len(units) - index + 1} unit(s) not started"
+            )
+            _log(log, f"run {run.run_id}: {run.errors[-1]}")
+            run.units.extend(_not_started(units[index - 1 :], reason))
             break
         if deadline.expired:
-            cancelled = False
+            reason = (
+                f"the job budget of {settings.job_timeout_s}s was exhausted "
+                f"after {deadline.elapsed_s:.1f}s"
+            )
             run.errors.append(
                 f"job budget of {settings.job_timeout_s}s exhausted before "
                 f"unit {unit.unit_id}; {len(units) - index + 1} unit(s) not started"
             )
             _log(log, f"run {run.run_id}: {run.errors[-1]}")
+            run.units.extend(_not_started(units[index - 1 :], reason))
             break
 
         result = _process_unit(unit, model, settings, deadline, log)
@@ -181,6 +199,27 @@ def generate_drafts(
     for line in run.report_lines():
         _log(log, line)
     return run
+
+
+def _not_started(units: Sequence["_Unit"], reason: str) -> list[GenerationUnitResult]:
+    """Record planned units that never reached the model, with their sources."""
+    return [
+        GenerationUnitResult(
+            unit_id=unit.unit_id,
+            requirement_ids=unit.requirement_ids,
+            status=UnitStatus.NOT_STARTED,
+            source_spans=unit.spans,
+            issues=[
+                ValidationIssue(
+                    "E_UNIT_NOT_STARTED",
+                    Severity.ERROR,
+                    unit.unit_id,
+                    f"no test draft was generated for this requirement: {reason}",
+                )
+            ],
+        )
+        for unit in units
+    ]
 
 
 def _process_unit(
@@ -356,6 +395,7 @@ def _questions_from_findings(
 
 __all__ = [
     "GenerationSettings",
+    "new_run_id",
     "ProgressUpdate",
     "RunStatus",
     "generate_drafts",

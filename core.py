@@ -129,8 +129,21 @@ class AgentLocal:
     local ``ollama run``.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, settings: OllamaSettings | None = None, **kwargs):
+        """``settings`` is the shared :class:`OllamaSettings`.
+
+        GUI, worker and CLI all build it through
+        ``spec2test.bootstrap.ollama_settings_from_config``, so mode, host and
+        timeouts cannot drift apart. The keyword arguments remain for callers
+        that predate that object.
+        """
         cfg = {**DEFAULTS, **{k: v for k, v in kwargs.items() if v is not None}}
+        if settings is not None:
+            cfg["model"] = settings.model
+            cfg["mode"] = settings.mode
+            cfg["ollama_url"] = settings.resolved_host
+            cfg["connect_timeout"] = settings.connect_timeout_s
+            cfg["read_timeout"] = settings.read_timeout_s
         model = kwargs.get("model") or kwargs.get("model_name")
         if model:
             cfg["model"] = model
@@ -163,7 +176,7 @@ class AgentLocal:
             self.opt["num_thread"] = cfg["num_thread"]
 
         self.system_prompt = kwargs.get("system_prompt") or PROMPT_ROLE
-        self.settings = OllamaSettings(
+        self.settings = settings or OllamaSettings(
             model=self.model,
             mode=self.mode,
             host=self.url,

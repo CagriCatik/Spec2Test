@@ -4,6 +4,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -46,17 +47,46 @@ def run_to_dict(run: GenerationRun) -> dict:
     }
 
 
+class RunAlreadyStoredError(FileExistsError):
+    """Raised instead of overwriting the result of an earlier run."""
+
+
 class JsonRunStore:
-    """Implements :class:`RunStorePort`."""
+    """Implements :class:`RunStorePort`.
+
+    A stored run is never overwritten silently: run IDs are collision-free, so
+    an existing file means a different run already used that name.
+    """
 
     def __init__(self, directory: Path | str) -> None:
         self.directory = Path(directory)
 
-    def save_run(self, run: GenerationRun) -> Path:
+    def path_for(self, run: GenerationRun) -> Path:
+        return self.directory / f"{run.run_id}.json"
+
+    def save_run(self, run: GenerationRun, *, overwrite: bool = False) -> Path:
         self.directory.mkdir(parents=True, exist_ok=True)
-        target = self.directory / f"{run.run_id}.json"
+        target = self.path_for(run)
+        if target.exists() and not overwrite:
+            raise RunAlreadyStoredError(
+                f"{target} already exists; refusing to overwrite the result of an "
+                "earlier run. Pass overwrite=True to replace it deliberately."
+            )
         payload = json.dumps(run_to_dict(run), ensure_ascii=False, indent=2)
-        tmp = target.with_suffix(".json.tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, target)  # atomic replace; a partial file is never visible
+
+        # A unique temporary file per write: concurrent writers cannot corrupt
+        # each other's partial file.
+        handle, tmp_name = tempfile.mkstemp(
+            dir=self.directory, prefix=f".{run.run_id}.", suffix=".tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, target)  # atomic; a partial file is never visible
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         return target

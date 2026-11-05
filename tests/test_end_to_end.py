@@ -96,15 +96,14 @@ def test_a_run_survives_storing_and_reloading(spec_a, tmp_path):
     assert reloaded["run"]["prompt_version"] and reloaded["run"]["schema_version"]
 
 
-def test_the_store_writes_atomically(spec_a, tmp_path):
+def test_the_store_writes_atomically_and_leaves_no_temporary_file(spec_a, tmp_path):
     requirements, _ = ingest_all([spec_a])
     run = generate_drafts(requirements[:1], RuleBasedFakeModel())
     store = JsonRunStore(tmp_path / "runs")
-    first = store.save_run(run)
-    run.run_id = run.run_id  # same id, overwrite
-    second = store.save_run(run)
-    assert first == second
+    path = store.save_run(run)
+    assert path.exists()
     assert list((tmp_path / "runs").glob("*.tmp")) == [], "no temporary file is left"
+    assert list((tmp_path / "runs").glob(".*")) == [], "no hidden partial file is left"
 
 
 def test_run_to_dict_contains_the_provenance():

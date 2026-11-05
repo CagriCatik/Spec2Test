@@ -26,6 +26,7 @@ from ..domain.models import (
 )
 from .chunking import Block, build_blocks
 from .contracts import ParseOutcome, strip_code_fences
+from .generate import new_run_id
 
 LEGACY_KEYS = (
     "testcase_name",
@@ -205,7 +206,7 @@ def generate_legacy_cases(
     """DEPRECATED bridge. Returns legacy case dicts plus a run with its status."""
     blocks = build_blocks(pages, combine, overlap=overlap)
     run = GenerationRun(
-        run_id=f"legacy-{int(time.time())}",
+        run_id=new_run_id("legacy"),
         model=model_name,
         endpoint=endpoint,
         mode="legacy",

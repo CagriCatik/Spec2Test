@@ -58,6 +58,8 @@ class UnitStatus(str, Enum):
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     CANCELLED = "cancelled"
+    #: planned but never sent to the model (budget exhausted, run cancelled)
+    NOT_STARTED = "not_started"
 
 
 class QuestionOrigin(str, Enum):
@@ -270,6 +272,8 @@ class GenerationRun:
     status: RunStatus = RunStatus.RUNNING
     started_at: str | None = None
     finished_at: str | None = None
+    #: how many units the run planned; compared against the processed ones
+    planned_unit_count: int = 0
     units: list[GenerationUnitResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -290,15 +294,40 @@ class GenerationRun:
     def accepted_units(self) -> list[GenerationUnitResult]:
         return [unit for unit in self.units if unit.status is UnitStatus.ACCEPTED]
 
+    @property
+    def not_started_units(self) -> list[GenerationUnitResult]:
+        return [unit for unit in self.units if unit.status is UnitStatus.NOT_STARTED]
+
+    @property
+    def processed_units(self) -> list[GenerationUnitResult]:
+        """Units that actually reached the model (accepted or rejected)."""
+        return [
+            unit
+            for unit in self.units
+            if unit.status in (UnitStatus.ACCEPTED, UnitStatus.REJECTED)
+        ]
+
+    @property
+    def is_incomplete(self) -> bool:
+        """True when planned work was not processed."""
+        if self.not_started_units:
+            return True
+        return self.planned_unit_count > len(self.processed_units)
+
     def resolve_status(self, *, cancelled: bool = False) -> RunStatus:
-        """Derive the final status. Finishing is not the same as succeeding."""
+        """Derive the final status. Finishing is not the same as succeeding.
+
+        A run is only ``completed`` when every planned unit was processed and
+        accepted. Units that were never started - because the job budget ran
+        out or the run was cancelled - make the run ``partial`` at best.
+        """
         if cancelled:
             self.status = RunStatus.CANCELLED
         elif not self.units:
             self.status = RunStatus.FAILED
         elif not self.accepted_units:
             self.status = RunStatus.FAILED
-        elif self.rejected_units:
+        elif self.rejected_units or self.is_incomplete:
             self.status = RunStatus.PARTIAL
         else:
             self.status = RunStatus.COMPLETED
@@ -310,13 +339,23 @@ class GenerationRun:
             f"run {self.run_id}: {self.status.value}",
             f"  model={self.model} endpoint={self.endpoint} mode={self.mode}",
             f"  prompt={self.prompt_version} schema={self.schema_version}",
-            f"  units accepted={len(self.accepted_units)} rejected={len(self.rejected_units)}",
+            f"  units planned={self.planned_unit_count or len(self.units)} "
+            f"accepted={len(self.accepted_units)} rejected={len(self.rejected_units)} "
+            f"not started={len(self.not_started_units)}",
             f"  test case drafts={len(self.test_cases)} open questions={len(self.open_questions)}",
         ]
         for unit in self.rejected_units:
             refs = ", ".join(span.label() for span in unit.source_spans) or "no span"
             lines.append(
                 f"  REJECTED {unit.unit_id} [{', '.join(unit.requirement_ids)}] ({refs})"
+            )
+            for issue in unit.issues:
+                lines.append(f"      {issue}")
+        for unit in self.not_started_units:
+            refs = ", ".join(span.label() for span in unit.source_spans) or "no span"
+            lines.append(
+                f"  NOT STARTED {unit.unit_id} "
+                f"[{', '.join(unit.requirement_ids)}] ({refs})"
             )
             for issue in unit.issues:
                 lines.append(f"      {issue}")

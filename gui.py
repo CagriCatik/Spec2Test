@@ -21,6 +21,7 @@ from typing import Any, Final
 from PySide6.QtCore import QSettings, QThreadPool, Qt
 from PySide6.QtGui import QIcon, QCursor, QAction
 from PySide6.QtWidgets import (
+    QLineEdit,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -50,18 +51,25 @@ from PySide6.QtWidgets import (
 from documentation import PARAMETER_DOC  # HTML help
 from core import save_csv, save_xlsx, summarise_cases  # exporters & analytics
 from spec2test.adapters.ollama import (  # model list via /api/tags
-    MODE_LOCAL,
+    API_KEY_ENV,
     OllamaChatClient,
     OllamaError,
-    OllamaSettings,
+    capabilities_for,
+    check_model_choice,
     list_models,
 )
+from spec2test.bootstrap import ollama_settings_from_config
 from workers import GeneratorTask  # background worker
 from qmodels import TestCaseTableModel  # table model wrapper
 from config_models import (
+    DEFAULT_CONNECT_TIMEOUT_S,
     DEFAULT_MODEL_NAME,
     DEFAULT_OLLAMA_URL,
+    DEFAULT_READ_TIMEOUT_S,
+    MODE_CLOUD,
+    MODE_LOCAL,
     AppConfig,
+    CloudConfig,
     CacheConfig,
     GenerationConfig,
     ModelConfig,
@@ -142,6 +150,7 @@ class MainWindow(QMainWindow):
                 gpu_layers=None if self.gpu_layers.value() == -1 else self.gpu_layers.value(),
                 num_thread=None if self.num_thread.value() == 0 else self.num_thread.value(),
             ),
+            cloud=self._cloud_config(),
             generation=GenerationConfig(
                 batch_size=self.batch_size.value(),
                 combine_pages=self.combine_pages.value(),
@@ -167,6 +176,10 @@ class MainWindow(QMainWindow):
         return cfg.to_dict()
 
     def _apply_config(self, cfg: AppConfig) -> None:
+        self.mode.setCurrentText(cfg.cloud.mode)
+        self.host.setText(cfg.cloud.host or "")
+        self.connect_timeout.setValue(cfg.cloud.connect_timeout_s)
+        self.read_timeout.setValue(cfg.cloud.read_timeout_s)
         self.model_name.setCurrentText(cfg.model.name)
         self.temperature.setValue(cfg.model.temperature)
         self.top_p.setValue(cfg.model.top_p)
@@ -220,8 +233,9 @@ class MainWindow(QMainWindow):
         self.chunk_overlap.setEnabled(checked)
 
     def _update_gpu_controls(self, checked: bool) -> None:
+        is_local = self.mode.currentText() == MODE_LOCAL
         for widget in (self.num_gpu, self.main_gpu, self.gpu_layers):
-            widget.setEnabled(checked)
+            widget.setEnabled(bool(checked) and is_local)
 
     def _sync_overlap_limit(self, value: int) -> None:
         maximum = max(0, value - 1)
@@ -320,9 +334,32 @@ class MainWindow(QMainWindow):
         ctrl = QWidget(); v = QVBoxLayout(ctrl)
         splitter.addWidget(ctrl)
 
+        # Endpoint group - the mode is always explicit
+        gb_ep = QGroupBox("Endpoint"); form_ep = QFormLayout(gb_ep)
+        self.mode = QComboBox()
+        self.mode.addItems([MODE_CLOUD, MODE_LOCAL])
+        self.host = QLineEdit()
+        self.host.setPlaceholderText("leave empty for the default host of the mode")
+        self.connect_timeout = QDoubleSpinBox(minimum=1.0, maximum=120.0, singleStep=1.0)
+        self.connect_timeout.setValue(DEFAULT_CONNECT_TIMEOUT_S)
+        self.read_timeout = QDoubleSpinBox(minimum=5.0, maximum=3600.0, singleStep=10.0)
+        self.read_timeout.setValue(DEFAULT_READ_TIMEOUT_S)
+        self.btn_check = QPushButton("Check connection / refresh models")
+        for lbl, w in (
+            ("🔀 Mode:", self.mode),
+            ("🌐 Host:", self.host),
+            ("⏱️ Connect timeout (s):", self.connect_timeout),
+            ("⏱️ Read timeout (s):", self.read_timeout),
+        ):
+            form_ep.addRow(lbl, w)
+        form_ep.addRow(self.btn_check)
+        v.addWidget(gb_ep)
+
         # Model & sampling group
         gb_model = QGroupBox("Model"); form_m = QFormLayout(gb_model)
-        self.model_name = QComboBox(editable=True); self._populate_models()
+        self.model_name = QComboBox(editable=True)
+        self.mode.currentTextChanged.connect(self._on_mode_changed)
+        self.btn_check.clicked.connect(self._populate_models)
         self.temperature = QDoubleSpinBox(minimum=0.0, maximum=2.0, singleStep=0.1)
         self.top_p = QDoubleSpinBox(minimum=0.0, maximum=1.0, singleStep=0.05)
         self.top_k = QSpinBox(minimum=1, maximum=1000)
@@ -354,6 +391,9 @@ class MainWindow(QMainWindow):
         form_m.addRow("🧵 CPU threads:", self.num_thread)
         self.use_gpu.toggled.connect(self._update_gpu_controls)
         self._update_gpu_controls(self.use_gpu.isChecked())
+        # fill the model list once every endpoint widget exists
+        self._populate_models()
+        self._on_mode_changed(self.mode.currentText())
         v.addWidget(gb_model)
 
         # Generation group
@@ -507,28 +547,60 @@ class MainWindow(QMainWindow):
         layout.addLayout(export_row)
 
     # --------------------------- model list ----------------------------------
+    def _cloud_config(self) -> CloudConfig:
+        """The endpoint settings currently selected in the GUI."""
+        return CloudConfig(
+            mode=self.mode.currentText(),
+            host=self.host.text().strip() or None,
+            connect_timeout_s=self.connect_timeout.value(),
+            read_timeout_s=self.read_timeout.value(),
+        )
+
+    def _on_mode_changed(self, mode: str) -> None:
+        """GPU options exist only for local operation."""
+        is_local = mode == MODE_LOCAL
+        self.use_gpu.setEnabled(is_local)
+        self._update_gpu_controls(is_local and self.use_gpu.isChecked())
+        if mode == MODE_CLOUD:
+            self._log(
+                f"🔀 Mode {mode}: the API key is read from ${API_KEY_ENV}, "
+                "never stored and never logged. GPU options do not apply."
+            )
+        else:
+            self._log(f"🔀 Mode {mode}: no authentication, GPU options apply.")
+        self._populate_models()
+
     def _populate_models(self) -> None:
         """Fill the model combo-box from /api/tags of the configured host.
 
-        No CLI fallback: a model list obtained from the local CLI reports local
-        aliases (``...-cloud``), which are not the names the cloud API expects.
-        The combo stays editable, so a manual name is always possible.
+        No CLI fallback: a model list from the local CLI reports local aliases
+        (``...-cloud``), which are not the names the cloud API expects. The
+        combo stays editable, so a manual name is always possible.
         """
-        host = DEFAULT_OLLAMA_URL
-        mode = MODE_LOCAL
+        cloud = self._cloud_config()
+        settings = ollama_settings_from_config(
+            {"cloud": cloud.to_dict(), "model": {"name": "unused"}},
+            mode=cloud.mode,
+            model="unused",
+        )
+        selected = self.model_name.currentText()
         try:
-            settings = OllamaSettings(model="unused", mode=mode, host=host,
-                                      connect_timeout_s=3.0, read_timeout_s=5.0,
-                                      max_retries=0)
             models = list_models(OllamaChatClient(settings))
-            self._log(f"🧠 {len(models)} model(s) reported by {host}/api/tags")
+            self._log(
+                f"🧠 {len(models)} model(s) reported by {settings.resolved_host}/api/tags"
+            )
         except OllamaError as exc:
             models = []
             self._log(f"⚠️ Model list unavailable ({exc}). Enter a model name manually.")
 
-        if not models:
-            models = [DEFAULT_MODEL_NAME]
-        self.model_name.addItems(models)
+        self.model_name.clear()
+        self.model_name.addItems(models or [DEFAULT_MODEL_NAME])
+        if selected:
+            self.model_name.setCurrentText(selected)
+            for warning in check_model_choice(selected, models, cloud.mode):
+                self._log(f"⚠️ {warning}")
+            for note in capabilities_for(selected, cloud.mode).notes:
+                self._log(f"ℹ️ {note}")
 
     # ----------------------- file selection -------------------------------
     def _select_pdf(self):

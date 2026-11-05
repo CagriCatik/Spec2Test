@@ -218,6 +218,14 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+Or install the package itself, which provides the `spec2test` command:
+
+```bash
+pip install -e .            # core pipeline and CLI
+pip install -e ".[gui]"     # plus PySide6 and the CSV/Excel exporters
+pip install -e ".[dev]"     # plus pytest
+```
+
 ---
 
 ## Usage
@@ -345,19 +353,31 @@ configured host; redirects are not followed.
 export OLLAMA_API_KEY=...          # cloud mode only
 
 # list the models of the configured host and check a name
-python -m spec2test.cli models --mode ollama_cloud --model gpt-oss:120b
+spec2test models --mode ollama_cloud --model gpt-oss:120b
 
 # full example run: import, generate, validate, show drafts, store the run
-python -m spec2test.cli run --spec requirements/sw_req_spec_ras.md \
+spec2test run --spec requirements/sw_req_spec_ras.md \
     --mode ollama_cloud --model gpt-oss:120b --out runs
 
 # offline demonstration without any network or credentials
-python -m spec2test.cli run --spec tests/fixtures/specs/spec_a.md --mode fake
+spec2test run --spec tests/fixtures/specs/spec_a.md --mode fake
 ```
+
+Without installing the package, run it from the repository root with
+`PYTHONPATH=src python -m spec2test.cli …`.
+
+The mode, host and timeouts live in `config.yml` and are used by the GUI, the
+Qt worker and the CLI alike. In the GUI they are in the **Endpoint** group; GPU
+options are disabled in cloud mode, because they only apply locally.
 
 Exit codes: `0` completed, `2` partial, `3` cancelled, `1` failed. A progress
 value of 100 % only means the processing ended - the run status says whether it
-worked.
+worked. A run is `completed` only when every planned requirement was processed:
+if the job budget ends early, the unprocessed requirements are listed as
+`NOT STARTED` and the run is `partial`.
+
+Each run is stored under a collision-free ID (`run-<UTC timestamp>-<random>`),
+and an existing result file is never overwritten silently.
 
 Note on model names: the cloud API expects the name reported by `/api/tags`
 (for example `gpt-oss:120b`). The local CLI and app show aliases such as

@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, QRunnable, Signal
 from config_models import AppConfig
 from core import AgentLocal, PromptCache, generate_test_cases, load_prompt_file
 from core import pdf_to_text_pages
+from spec2test.bootstrap import ollama_settings_from_config
 
 
 class _Signals(QObject):
@@ -64,26 +65,14 @@ class GeneratorTask(QRunnable):
             model_cfg = cfg.model
             prompt_role = load_prompt_file(cfg.paths.prompt_path)
 
-            mode = (
-                self.cfg.get("mode")
-                or (self.cfg.get("cloud") or {}).get("mode")
-                or "ollama_local"
-            )
+            # One shared conversion for GUI, worker and CLI: mode, host and
+            # timeouts come from the configuration, never from a local default.
+            settings = ollama_settings_from_config(self.cfg, mode=cfg.cloud.mode)
+            mode = settings.mode
             agent = AgentLocal(
-                mode=mode,
-                model=model_cfg.name,
-                ollama_url=model_cfg.url,
-                temperature=model_cfg.temperature,
-                top_p=model_cfg.top_p,
-                top_k=model_cfg.top_k,
-                max_tokens=model_cfg.max_tokens,
-                http_timeout=model_cfg.http_timeout,
+                settings=settings,
                 system_prompt=prompt_role,
                 use_gpu=model_cfg.use_gpu,
-                num_gpu=model_cfg.num_gpu,
-                main_gpu=model_cfg.main_gpu,
-                gpu_layers=model_cfg.gpu_layers,
-                num_thread=model_cfg.num_thread,
             )
 
             self.signals.message.emit(

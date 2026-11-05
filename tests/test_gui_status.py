@@ -117,7 +117,7 @@ def test_saving_from_the_gui_keeps_sections_it_does_not_know(window, isolated_co
     isolated_config.write_text(
         yaml.safe_dump(
             {
-                "cloud": {"mode": "ollama_cloud", "host": "https://ollama.com"},
+                "experimental": {"future_flag": True},
                 "generation": {"combine_pages": 5, "max_repair_attempts": 2},
                 "model": {"name": "old-model"},
             }
@@ -128,9 +128,11 @@ def test_saving_from_the_gui_keeps_sections_it_does_not_know(window, isolated_co
     window._save_persisted()
     saved = yaml.safe_load(isolated_config.read_text(encoding="utf-8"))
 
-    assert saved["cloud"] == {"mode": "ollama_cloud", "host": "https://ollama.com"}
+    assert saved["experimental"] == {"future_flag": True}, "unknown section dropped"
     assert saved["generation"]["max_repair_attempts"] == 2, "unknown key was dropped"
     assert "combine_pages" in saved["generation"]
+    # the cloud section is written by the GUI itself now
+    assert saved["cloud"]["mode"] in ("ollama_cloud", "ollama_local")
 
 
 def test_the_merge_helper_overlays_without_dropping():
@@ -141,3 +143,163 @@ def test_the_merge_helper_overlays_without_dropping():
         {"a": {"change": 2}, "c": 3},
     )
     assert merged == {"a": {"keep": 1, "change": 2}, "b": 1, "c": 3}
+
+
+# ------------------------------------------- GUI → worker → adapter ----------
+def _fake_run():
+    from spec2test.domain.models import GenerationRun
+
+    run = GenerationRun(
+        run_id="r",
+        model="m",
+        endpoint="e",
+        mode="fake",
+        prompt_version="p",
+        schema_version="1.0",
+        source_hash="h",
+    )
+    run.resolve_status()
+    return run
+
+
+@pytest.fixture
+def recording_worker(monkeypatch):
+    """Replace the agent and the generation call, keep the real worker code."""
+    import workers
+
+    recorded: dict = {}
+
+    class RecordingAgent:
+        def __init__(self, settings=None, **kwargs):
+            recorded["settings"] = settings
+            recorded["kwargs"] = kwargs
+            self.settings = settings
+            self.model = settings.model
+            self.url = settings.resolved_host
+
+        def ensure_server(self):  # no network in the test
+            return True
+
+    def fake_generate(**kwargs):
+        recorded["generate_kwargs"] = kwargs
+        return [], _fake_run()
+
+    monkeypatch.setattr(workers, "AgentLocal", RecordingAgent)
+    monkeypatch.setattr(workers, "generate_test_cases", fake_generate)
+    return recorded
+
+
+@pytest.mark.parametrize(
+    "mode,host,expected_host",
+    [
+        ("ollama_cloud", "", "https://ollama.com"),
+        ("ollama_cloud", "https://ollama.example", "https://ollama.example"),
+        ("ollama_local", "", "http://localhost:11434"),
+        ("ollama_local", "http://box.lan:11434", "http://box.lan:11434"),
+    ],
+)
+def test_the_gui_hands_mode_host_and_timeouts_to_the_worker(
+    window, recording_worker, spec_pdf, mode, host, expected_host
+):
+    """The review finding: the worker fell back to ollama_local."""
+    import workers
+
+    window.mode.setCurrentText(mode)
+    window.host.setText(host)
+    window.connect_timeout.setValue(7.0)
+    window.read_timeout.setValue(123.0)
+    window.model_name.setCurrentText("some-model:1b")
+
+    task = workers.GeneratorTask(pdf=spec_pdf, cfg=window._collect_cfg())
+    task.run()
+
+    settings = recording_worker["settings"]
+    assert settings is not None, "the worker did not build shared settings"
+    assert settings.mode == mode
+    assert settings.resolved_host == expected_host
+    assert settings.connect_timeout_s == 7.0
+    assert settings.read_timeout_s == 123.0
+    assert settings.model == "some-model:1b"
+
+
+def test_the_full_kick_off_path_carries_the_cloud_mode(
+    window, recording_worker, spec_pdf
+):
+    """Covers _kick_off itself, not just _collect_cfg."""
+
+    class SynchronousPool:
+        def start(self, task):
+            task.run()
+
+    window._threadpool = SynchronousPool()
+    window._pdf_path = spec_pdf
+    window.mode.setCurrentText("ollama_cloud")
+    window.host.setText("")
+
+    window._kick_off()
+
+    assert recording_worker["settings"].mode == "ollama_cloud"
+    assert recording_worker["settings"].resolved_host == "https://ollama.com"
+
+
+def test_gpu_options_are_not_sent_in_cloud_mode(window, recording_worker, spec_pdf):
+    import workers
+
+    window.mode.setCurrentText("ollama_cloud")
+    window.use_gpu.setChecked(True)
+    window.num_gpu.setValue(4)
+
+    task = workers.GeneratorTask(pdf=spec_pdf, cfg=window._collect_cfg())
+    task.run()
+
+    options = recording_worker["settings"].options()
+    assert "num_gpu" not in options
+    assert "num_thread" not in options
+
+
+def test_gpu_options_are_sent_in_local_mode(window, recording_worker, spec_pdf):
+    import workers
+
+    window.mode.setCurrentText("ollama_local")
+    window.use_gpu.setChecked(True)
+    window.num_gpu.setValue(4)
+
+    task = workers.GeneratorTask(pdf=spec_pdf, cfg=window._collect_cfg())
+    task.run()
+
+    assert recording_worker["settings"].options()["num_gpu"] == 4
+
+
+def test_the_mode_survives_saving_and_reloading_the_configuration(window, isolated_config):
+    window.mode.setCurrentText("ollama_cloud")
+    window.host.setText("https://ollama.example")
+    window.read_timeout.setValue(222.0)
+    window._save_persisted()
+
+    window.mode.setCurrentText("ollama_local")
+    window.host.setText("")
+    window._load_persisted()
+
+    assert window.mode.currentText() == "ollama_cloud"
+    assert window.host.text() == "https://ollama.example"
+    assert window.read_timeout.value() == 222.0
+
+
+def test_the_model_list_follows_the_selected_mode(window, monkeypatch):
+    import gui
+
+    seen: list[str] = []
+
+    def record(client):
+        seen.append(client.settings.resolved_host)
+        return ["listed-model"]
+
+    monkeypatch.setattr(gui, "list_models", record)
+    window.mode.setCurrentText("ollama_local")
+    window.host.setText("")
+    window._populate_models()
+    window.mode.setCurrentText("ollama_cloud")
+    window._populate_models()
+
+    assert "http://localhost:11434" in seen
+    assert "https://ollama.com" in seen, "the model list ignored the cloud mode"

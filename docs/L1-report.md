@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  410 bestanden, 5 übersprungen
+pytest -q  →  436 bestanden, 5 übersprungen
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -225,12 +225,16 @@ hebt die Freigabe auf.
    `SPEC2TEST_LIVE=1 SPEC2TEST_LIVE_MODEL=gpt-oss:120b pytest tests/test_live_cloud.py`.
 2. **Modellvergleich nicht durchgeführt** – gehört zu L3 und setzt mehrere
    Durchläufe gegen zwei Cloud-Modelle voraus.
-3. **GUI bleibt auf dem Legacy-Pfad.** Quellenansicht, Prüfbefunde, offene
-   Fragen und Revisionen sind AP 5. Die GUI zeigt den Laufstatus, nutzt aber
-   weiter das flache Format ohne Anforderungsbezug; `application/legacy.py` ist
-   der dafür vorgesehene, als veraltet markierte Pfad.
-4. **Modellliste in der GUI blockiert weiterhin kurz den Qt-Thread** (3 s
-   Zeitlimit) – wie im Ausgangsstand. Die nichtblockierende Variante ist AP 5.
+3. **Die GUI generiert weiter über den Legacy-Pfad.** Modus, Host und
+   Zeitlimits teilt sie inzwischen mit Worker und CLI, der Generierungsablauf
+   selbst nutzt aber weiter das flache Format ohne Anforderungsbezug.
+   Quellenansicht, Prüfbefunde, offene Fragen und Revisionen sind AP 5;
+   `application/legacy.py` ist der dafür vorgesehene, als veraltet markierte
+   Pfad.
+4. **Die Modellliste blockiert weiterhin kurz den Qt-Thread** (Verbindungs-
+   zeitlimit, voreingestellt 10 s, in der GUI einstellbar) – wie im
+   Ausgangsstand, jetzt aber mit einer Schaltfläche zum erneuten Abruf statt
+   nur beim Start. Die nichtblockierende Variante ist AP 5.
 5. **Anforderungserfassung ist rein deterministisch.** Freitext ohne ID wird
    über Absatzgrenzen und Modalverben erkannt; dabei kann erläuternde Prosa als
    Kandidat auftauchen. Solche Treffer sind als `needs_clarification` mit
@@ -250,6 +254,72 @@ hebt die Freigabe auf.
 10. **Der Umgebungs-Zufall** `pandas 3.1.1` / `PyMuPDF 2.1` wurde für die Tests
    benutzt; `requirements.txt` nennt weiter die festgeschriebenen Versionen des
    Ausgangsstands. Eine Abgleichprüfung der Pins steht aus.
+
+## 10 Nacharbeiten aus dem Review von `b5be55b`
+
+Vier Befunde, alle reproduziert, behoben und durch Regressionstests abgedeckt
+(`tests/test_regression_review.py`, `tests/test_gui_status.py`).
+
+**P1 – Die GUI übernahm den Cloud-Modus nicht.** Bestätigt: `config.yml` sagte
+`ollama_cloud`, die GUI lief auf `ollama_local`. `_collect_cfg()` lieferte gar
+keinen `cloud`-Abschnitt, und ein Host-Feld existierte überhaupt nicht.
+Behoben durch eine gemeinsame `CloudConfig` (Modus, Host, Verbindungs- und
+Lesezeitlimit, Wiederholungen, Auftragsbudget) in `config_models.py`, die GUI,
+Worker und CLI über `bootstrap.ollama_settings_from_config` identisch
+auswerten. Die GUI hat jetzt eine Gruppe **Endpoint** mit Modusauswahl,
+Host-Feld, beiden Zeitlimits und einer Verbindungsprüfung; GPU-Bedienelemente
+sind im Cloud-Modus abgeschaltet, die Modellliste folgt dem gewählten Modus,
+und `AgentLocal` nimmt die gemeinsamen `OllamaSettings` direkt entgegen.
+Geprüft wird der tatsächliche Aufrufweg inklusive `_kick_off()`.
+
+**P1 – Ein unvollständiger Lauf konnte `completed` heißen.** Bestätigt mit der
+Reproduktion aus dem Review. Ursache: beim erschöpften Zeitbudget brach die
+Schleife ab, ohne die nicht gestarteten Einheiten zu erfassen; `resolve_status`
+sah nur angenommene Einheiten. Behoben durch `UnitStatus.NOT_STARTED`:
+nicht gestartete Einheiten werden mit Requirement-IDs, Quellstellen und dem
+Befund `E_UNIT_NOT_STARTED` erfasst und erscheinen im Bericht als
+`NOT STARTED`. `GenerationRun.planned_unit_count` vergleicht geplante mit
+tatsächlich bearbeiteten Einheiten; `is_incomplete` erzwingt mindestens
+`partial`. Gilt auch für den Abbruch, der weiterhin `cancelled` bleibt.
+
+**P1 – Ergebnisdateien konnten überschrieben werden.** Bestätigt: zwei Läufe
+derselben Sekunde ergaben denselben Dateinamen, der erste Lauf war verloren.
+Lauf-IDs sind jetzt `run-<UTC-Zeitstempel>-<12 Hex>` (sortierbar und
+kollisionsfrei, 200 IDs in einer Sekunde bleiben verschieden), die
+Legacy-Brücke nutzt dieselbe Funktion. Die Ablage schreibt in eine eindeutige
+temporäre Datei (`tempfile.mkstemp` im Zielverzeichnis) mit `fsync` vor dem
+atomaren Ersetzen, räumt sie bei Fehlern auf und verweigert das Überschreiben
+eines bestehenden Laufs mit `RunAlreadyStoredError`; `overwrite=True` bleibt
+als ausdrückliche Entscheidung möglich.
+
+**P2 – Der dokumentierte CLI-Aufruf lief nach normaler Installation nicht.**
+Bestätigt: es gab keine Paketkonfiguration. Ergänzt: `pyproject.toml` mit
+src-Layout, Laufzeitabhängigkeiten (requests, pydantic, PyYAML, PyMuPDF),
+Extras `gui`, `rag`, `dev` und dem Einstiegspunkt `spec2test = spec2test.cli:main`.
+Zusätzlich sucht `bootstrap` die Konfiguration zuerst im Arbeitsverzeichnis,
+damit ein installiertes Kommando die Konfiguration des jeweiligen Projekts
+verwendet. Geprüft in einer frischen venv außerhalb des Repositories: sowohl
+`spec2test run …` als auch `python -m spec2test.cli run …` laufen ohne
+`PYTHONPATH` durch.
+
+Teststand danach: **436 bestanden, 5 übersprungen**.
+
+### Direkter Cloud-Nachweis weiterhin offen
+
+In dieser Umgebung ist `OLLAMA_API_KEY` nicht gesetzt. Der Adapter meldet das
+selbst, ohne dass Zugangsdaten angefasst werden mussten:
+
+```
+$ PYTHONPATH=src python -m spec2test.cli models --mode ollama_cloud
+model list failed: mode ollama_cloud requires an API key in $OLLAMA_API_KEY;
+no request was sent and the local CLI is not used as a fallback
+$ echo $?
+1
+```
+
+Der Nachweis steht damit aus und braucht einen Schlüssel in der Umgebung. Der
+frühere Aufruf über einen lokalen Ollama-Server mit Cloud-Modell ersetzt ihn
+nicht – das ist im Review zu Recht festgehalten.
 
 ## 9 Commits
 

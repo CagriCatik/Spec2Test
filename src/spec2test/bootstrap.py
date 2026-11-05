@@ -21,6 +21,20 @@ ALL_MODES = (MODE_CLOUD, MODE_LOCAL, MODE_FAKE)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.yml"
+CONFIG_FILENAME = "config.yml"
+
+
+def default_config_path() -> Path | None:
+    """Find a configuration file.
+
+    The working directory wins, so an installed ``spec2test`` command uses the
+    configuration of the project it is run in. The repository checkout is only
+    the fallback for running straight from the source tree.
+    """
+    for candidate in (Path.cwd() / CONFIG_FILENAME, DEFAULT_CONFIG_PATH):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 @dataclass
@@ -29,15 +43,15 @@ class AppSettings:
     ollama: OllamaSettings | None = None
     generation: GenerationSettings = field(default_factory=GenerationSettings)
     documents: list[Path] = field(default_factory=list)
-    output_dir: Path = field(default_factory=lambda: PROJECT_ROOT / "runs")
+    output_dir: Path = field(default_factory=lambda: Path.cwd() / "runs")
 
 
 def load_config(path: Path | str | None = None) -> dict[str, Any]:
     """Read config.yml if present. A missing file is not an error."""
     import yaml
 
-    config_path = Path(path) if path else DEFAULT_CONFIG_PATH
-    if not config_path.exists():
+    config_path = Path(path) if path else default_config_path()
+    if config_path is None or not config_path.exists():
         return {}
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
@@ -51,7 +65,10 @@ def ollama_settings_from_config(
     resolved_mode = mode or cloud_cfg.get("mode") or MODE_CLOUD
     if resolved_mode == MODE_FAKE:
         resolved_mode = MODE_CLOUD  # only used to build a descriptor shape
-    host = cloud_cfg.get("host") if resolved_mode == MODE_CLOUD else model_cfg.get("url")
+    # an explicit host always wins; otherwise the mode decides the default
+    host = cloud_cfg.get("host") or (
+        None if resolved_mode == MODE_CLOUD else model_cfg.get("url")
+    )
     return OllamaSettings(
         model=model or model_cfg.get("name") or "gpt-oss:120b",
         mode=resolved_mode,
