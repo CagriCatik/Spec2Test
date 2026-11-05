@@ -248,15 +248,27 @@ pip install -e ".[dev]"     # plus pytest
    was captured, with source positions), **Findings** (run report, open
    questions, rejected and unprocessed requirements), **Export table** and
    **Log**.
-6. Review a draft: select it in **Test drafts**. The panel below shows what
+6. Pick the **test scope** on the left: only the requirements selected there
+   get test cases. The rest of the knowledge base stays available as context.
+   Optionally write a task for the run and project guidance; both are stored
+   with the run and the guidance is appended to the rules, never replacing
+   them.
+7. Read the deliverable in **Test specification**: test cases grouped by
+   document, with requirements, steps, expectations, findings, open questions
+   and the sources of the context that was used. Filter by status or text.
+8. Review a draft: select it in **Test drafts**. The panel below shows what
    blocks approval and the open questions. Answer a question, accept a
    clarification finding with a reason, edit the draft, or decide: **Approve**,
    **Reject**, **Needs clarification**, **Reopen**.
-7. Save the work with *File > Save project*. A project file (`*.s2t.json`)
+9. Save the work with *File > Save project*. A project file (`*.s2t.json`)
    keeps the original documents, the requirements, every revision of every
    draft, the findings, the answered questions and the decision history.
    *File > Open project* restores all of it.
-8. Export the drafts as `.csv` or `.xlsx`.
+10. Export: **Specification (Markdown)** for reading, **(JSON)** for exchange,
+    **(Excel)** with separate sheets for test cases, test steps, requirement
+    links, open questions and context sources. The selector next to the
+    buttons chooses between all drafts and approved cases only; a draft export
+    says so in the document.
 
 Rules the review follows: an edit always creates a new revision and an earlier
 approval does not carry over; approval re-runs the validation for that exact
@@ -430,6 +442,11 @@ signal tables, interface descriptions, operating states:
 spec2test run --spec requirements/09_autosar_can_fd_communication_and_uds_services.md \
     --retrieval --knowledge requirements --index .spec2test/knowledge.db
 ```
+
+`--spec` decides what gets test cases. `--knowledge` only fills the index:
+its other requirements and sections are available as context and never become
+test targets of their own. In the window the same split is the **Knowledge
+base** group versus the **Test scope** list.
 
 `--knowledge` synchronises the index first: new and changed files are read
 again, deleted ones disappear. A file whose content did not change is still

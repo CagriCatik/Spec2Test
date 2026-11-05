@@ -21,27 +21,12 @@ from types import UnionType
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from ...domain.models import (
-    ClarificationStatus,
-    DocumentFormat,
     GenerationAttempt,
     GenerationRun,
     GenerationUnitResult,
-    Measurement,
-    OpenQuestion,
     Project,
-    QuestionOrigin,
-    Requirement,
-    ReviewAction,
-    ReviewEvent,
-    ReviewStatus,
-    RunStatus,
-    Severity,
     SourceDocument,
-    SourceSpan,
     TestCase,
-    TestStep,
-    UnitStatus,
-    ValidationIssue,
 )
 
 PROJECT_FORMAT = "1"
@@ -73,16 +58,8 @@ def _plain(value: Any) -> Any:
     return value
 
 
-_ENUMS = {
-    ClarificationStatus,
-    DocumentFormat,
-    QuestionOrigin,
-    ReviewAction,
-    ReviewStatus,
-    RunStatus,
-    Severity,
-    UnitStatus,
-}
+# Every enum of the domain is restored, not a hand-kept list: a new one must
+# not silently come back as a plain string.
 
 
 @lru_cache(maxsize=None)
@@ -119,8 +96,6 @@ def _build(target_type: Any, value: Any, path: str) -> Any:
     if origin is dict or target_type is dict:
         return value
     if isinstance(target_type, type) and issubclass(target_type, Enum):
-        if target_type not in _ENUMS:  # pragma: no cover - defensive
-            return value
         try:
             return target_type(value)
         except ValueError as exc:

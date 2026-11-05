@@ -282,3 +282,45 @@ def test_the_whole_corpus_indexes(index):
     assert {"requirement", "signal"} <= kinds
     # the signal tables a reviewer needs are in there
     assert index.search(["CAN-FD"], kinds=[ContextKind.SIGNAL])
+
+
+# =====================================================================
+# the knowledge base must not widen the test scope
+# =====================================================================
+def test_the_cli_knowledge_base_does_not_become_the_test_scope(tmp_path, capsys):
+    """--knowledge supplies context; only --spec decides what gets tests."""
+    from spec2test import cli
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "target.md").write_text(
+        "### Requirement: SYS-REQ-0001\nThe system shall react within 100 ms.\n",
+        encoding="utf-8",
+    )
+    for number in range(2, 6):
+        (corpus / f"other{number}.md").write_text(
+            f"### Requirement: SYS-REQ-000{number}\n"
+            f"The system shall do thing {number} within 200 ms.\n",
+            encoding="utf-8",
+        )
+
+    code = cli.main(
+        [
+            "run",
+            "--spec",
+            str(corpus / "target.md"),
+            "--mode",
+            "fake",
+            "--retrieval",
+            "--knowledge",
+            str(corpus),
+            "--index",
+            str(tmp_path / "kb.db"),
+            "--out",
+            str(tmp_path / "runs"),
+        ]
+    )
+    output = capsys.readouterr().out
+    assert code == 0
+    assert "units planned=1" in output, "the knowledge base widened the scope"
+    assert "4 further requirement(s) available as context" in output

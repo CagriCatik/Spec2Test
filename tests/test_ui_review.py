@@ -469,7 +469,7 @@ def test_the_context_tab_shows_what_was_sent(app, tmp_path, monkeypatch):
         for i in range(window.context.topLevelItemCount())
     ]
     assert labels, "the context tab stayed empty"
-    assert "Context (" in window.tabs.tabText(4)
+    assert "Context (" in window.tabs.tabText(5)
 
     entry = None
     for index in range(window.context.topLevelItemCount()):

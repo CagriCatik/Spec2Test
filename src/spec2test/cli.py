@@ -219,6 +219,7 @@ def _cmd_run(args) -> int:
         )
 
     source = content_hash("\n".join(r.text for r in requirements))
+    catalogue = list(requirements)
     knowledge = None
     if gen_settings.use_retrieval:
         from .adapters.knowledge import SqliteKnowledgeIndex
@@ -234,15 +235,21 @@ def _cmd_run(args) -> int:
             _out(f"knowledge index {index_path}: {report_sync.summary()}")
             for document in report_sync.documents.values():
                 documents.setdefault(document.document_id, document)
-            known = {r.requirement_id for r in requirements}
-            requirements.extend(
+            # The knowledge base supplies context, it does not widen the test
+            # scope: only --spec decides what gets test cases.
+            known = {r.requirement_id for r in catalogue}
+            catalogue.extend(
                 r for r in report_sync.requirements if r.requirement_id not in known
+            )
+            _out(
+                f"knowledge base: {len(catalogue) - len(requirements)} further "
+                "requirement(s) available as context"
             )
         else:
             _out(f"knowledge index {index_path}: reused as it is")
 
     if gen_settings.use_reference_context:
-        report = reference_report(requirements)
+        report = reference_report(catalogue)
         cited = sum(len(v) for v in report.citations.values())
         _out(
             f"reference context: {cited} citation(s), "
@@ -257,7 +264,7 @@ def _cmd_run(args) -> int:
             progress=progress,
             log=_out,
             documents=documents,
-            catalogue=requirements,
+            catalogue=catalogue,
             knowledge=knowledge,
         )
     except OllamaError as exc:

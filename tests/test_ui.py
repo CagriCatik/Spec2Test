@@ -146,6 +146,7 @@ def test_the_window_shows_only_tabs_the_pipeline_fills(window):
         "Requirements",
         "Findings",
         "Export table",
+        "Test specification",
         "Context",
         "Log",
     ]

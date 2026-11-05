@@ -415,6 +415,10 @@ class GenerationRun:
     schema_version: str
     source_hash: str
     parameters: dict = field(default_factory=dict)
+    #: the free task description a user gave for this run, if any
+    task_description: str | None = None
+    #: the project guidance that was appended to the contract rules
+    domain_guidance: str | None = None
     status: RunStatus = RunStatus.RUNNING
     started_at: str | None = None
     finished_at: str | None = None
@@ -533,6 +537,17 @@ class ReviewEvent:
 
 
 @dataclass
+class SpecificationMeta:
+    """Heading data of the test specification a project produces."""
+
+    title: str = "Test specification"
+    document_id: str = "TS-001"
+    revision: str = "1"
+    objective: str = ""
+    scope: str = ""
+
+
+@dataclass
 class Project:
     """Everything a reviewer needs to continue work later.
 
@@ -552,6 +567,7 @@ class Project:
     runs: list[GenerationRun] = field(default_factory=list)
     history: list[ReviewEvent] = field(default_factory=list)
     open_questions: list[OpenQuestion] = field(default_factory=list)
+    specification: SpecificationMeta = field(default_factory=SpecificationMeta)
 
     # ------------------------------------------------------------- lookup
     def case(self, case_id: str) -> TestCase | None:

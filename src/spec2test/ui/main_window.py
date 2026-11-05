@@ -19,6 +19,7 @@ from PySide6.QtCore import QSignalBlocker, QThreadPool, Qt, QTimer
 from PySide6.QtGui import QAction, QCursor, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QPlainTextEdit,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -48,7 +49,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..adapters.export import save_csv, save_xlsx, summarise_rows
+from ..adapters.export import (
+    save_csv,
+    save_json,
+    save_markdown,
+    save_specification_xlsx,
+    save_xlsx,
+    summarise_rows,
+)
+from ..application.specification import build_specification
 from ..adapters.persistence.project_store import (
     PROJECT_SUFFIX,
     ProjectFileError,
@@ -58,6 +67,7 @@ from ..adapters.persistence.project_store import (
 from ..application.review import ReviewError, add_run, project_from_run
 from ..adapters.ollama import API_KEY_ENV, capabilities_for, check_model_choice
 from ..application.legacy import legacy_rows
+from ..application.indexing import collect_documents
 from ..bootstrap import default_config_path, generation_settings_from_config
 from ..domain.models import ReviewStatus
 from ..config import (
@@ -70,7 +80,8 @@ from ..config import (
 from .help_text import PARAMETER_DOC
 from .models import TestCaseTableModel
 from .review_panel import STATUS_TEXT, ReviewPanel
-from .workers import DraftTask, ModelListTask
+from .scope_panel import ScopePanel, SpecificationView
+from .workers import DraftTask, IndexTask, ModelListTask
 
 ASSETS: Final[Path] = Path(__file__).resolve().parents[3] / "assets"
 
@@ -155,6 +166,10 @@ class MainWindow(QMainWindow):
         self._project_dirty = False
         self._last_requirements: list = []
         self._last_documents: list = []
+        self._catalogue: list = []
+        self._index_path = Path.cwd() / ".spec2test" / "knowledge.db"
+        self._index_task = None
+        self._specification = None
         self._task: DraftTask | None = None
         self._start_time: float | None = None
         self._model_list_pending = False
@@ -244,7 +259,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(4)
 
-        layout.addWidget(self._group_documents())
+        self.scope = ScopePanel()
+        self.scope.btn_folder.clicked.connect(self.select_knowledge_folder)
+        self.scope.btn_files.clicked.connect(self.select_knowledge_files)
+        self.scope.index_requested.connect(self.build_index)
+        layout.addWidget(self.scope)
+        layout.addWidget(self._group_task())
         layout.addWidget(self._group_endpoint())
         layout.addWidget(self._group_model())
         layout.addWidget(self._group_generation())
@@ -256,6 +276,40 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         return scroll
+
+    def _group_task(self) -> QGroupBox:
+        """Free task description and the project guidance, both editable."""
+        group = QGroupBox("Task and guidance")
+        layout = QVBoxLayout(group)
+
+        layout.addWidget(QLabel("Task for this run"))
+        self.task_description = QPlainTextEdit()
+        self.task_description.setPlaceholderText(
+            "for example: Write a test specification for cell balancing with "
+            "nominal cases, boundaries and the described fault reactions."
+        )
+        self.task_description.setMaximumHeight(80)
+        layout.addWidget(self.task_description)
+
+        layout.addWidget(QLabel("Project guidance (added to the rules)"))
+        self.guidance = QPlainTextEdit()
+        self.guidance.setPlaceholderText(
+            "role, coverage wishes, terminology, test level, language. The "
+            "output format and the validation rules cannot be changed here."
+        )
+        self.guidance.setMaximumHeight(120)
+        layout.addWidget(self.guidance)
+
+        row = QHBoxLayout()
+        self.btn_guidance_load = QPushButton("Load…")
+        self.btn_guidance_save = QPushButton("Save…")
+        self.btn_guidance_load.clicked.connect(self.load_guidance)
+        self.btn_guidance_save.clicked.connect(self.save_guidance)
+        row.addStretch(1)
+        row.addWidget(self.btn_guidance_load)
+        row.addWidget(self.btn_guidance_save)
+        layout.addLayout(row)
+        return group
 
     def _group_documents(self) -> QGroupBox:
         group = QGroupBox("Input")
@@ -433,6 +487,9 @@ class MainWindow(QMainWindow):
         table_layout.addWidget(self.table, 1)
         self.tabs.addTab(table_tab, "Export table")
 
+        self.specification = SpecificationView()
+        self.tabs.addTab(self.specification, "Test specification")
+
         # what was actually sent as supporting context, with its origin
         self.context = QTreeWidget()
         self.context.setHeaderLabels(["Supporting context", "Kind and reason"])
@@ -461,20 +518,36 @@ class MainWindow(QMainWindow):
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self.cancel_run)
-        self.btn_save_csv = QPushButton("Export CSV…")
+        self.export_what = QComboBox()
+        self.export_what.addItems(["All drafts", "Approved only"])
+        self.export_what.setToolTip(
+            "A draft export is marked as such. Approved only contains the test "
+            "cases a reviewer has released."
+        )
+        self.btn_export_md = QPushButton("Specification (Markdown)…")
+        self.btn_export_md.clicked.connect(self.export_specification_markdown)
+        self.btn_export_json = QPushButton("Specification (JSON)…")
+        self.btn_export_json.clicked.connect(self.export_specification_json)
+        self.btn_save_xlsx = QPushButton("Specification (Excel)…")
+        self.btn_save_xlsx.clicked.connect(self.export_specification_xlsx)
+        self.btn_save_csv = QPushButton("Flat CSV…")
         self.btn_save_csv.clicked.connect(self.export_csv)
-        self.btn_save_xlsx = QPushButton("Export Excel…")
-        self.btn_save_xlsx.clicked.connect(self.export_xlsx)
-        for button in (self.btn_save_csv, self.btn_save_xlsx):
+        for button in (
+            self.btn_save_csv,
+            self.btn_save_xlsx,
+            self.btn_export_md,
+            self.btn_export_json,
+        ):
             button.setEnabled(False)
-
-        for button in (self.btn_save_csv, self.btn_save_xlsx):
-            button.setMinimumWidth(120)
 
         bar.addWidget(self.progress)
         bar.addStretch(1)
-        bar.addWidget(self.btn_save_csv)
+        bar.addWidget(QLabel("Export:"))
+        bar.addWidget(self.export_what)
+        bar.addWidget(self.btn_export_md)
+        bar.addWidget(self.btn_export_json)
         bar.addWidget(self.btn_save_xlsx)
+        bar.addWidget(self.btn_save_csv)
         bar.addSpacing(16)
         bar.addWidget(self.btn_cancel)
         bar.addWidget(self.btn_run)
@@ -749,16 +822,131 @@ class MainWindow(QMainWindow):
         self.log_line(f"Guidance file: {self._guidance_path}")
 
     # =================================================================
+    # knowledge base
+    # =================================================================
+    def select_knowledge_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select knowledge base folder")
+        if not folder:
+            return
+        self.scope.set_sources(Path(folder), [])
+        self.log_line(f"Knowledge base: {folder}")
+        self.build_index(rebuild=False)
+
+    def select_knowledge_files(self) -> None:
+        names, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select knowledge base documents",
+            filter="Specifications (*.pdf *.txt *.md *.markdown);;All files (*)",
+        )
+        if not names:
+            return
+        self.scope.set_sources(None, [Path(n) for n in names])
+        self.log_line(f"Knowledge base: {len(names)} file(s)")
+        self.build_index(rebuild=False)
+
+    def knowledge_paths(self) -> list[Path]:
+        if self.scope.folder is not None:
+            return collect_documents(self.scope.folder)
+        return self.scope.files
+
+    def build_index(self, rebuild: bool = False) -> None:
+        paths = self.knowledge_paths()
+        if not paths:
+            self.log_line("Select a knowledge base first.")
+            return
+        self.scope.set_busy(True)
+        self.statusBar().showMessage(
+            f"{'Rebuilding' if rebuild else 'Updating'} the index over "
+            f"{len(paths)} document(s)…"
+        )
+        task = IndexTask(paths, self._index_path, rebuild=rebuild)
+        task.signals.finished.connect(self._on_index_ready)
+        task.signals.failed.connect(self._on_index_failed)
+        self._index_task = task
+        self._threadpool.start(task)
+
+    def _on_index_ready(self, result) -> None:
+        self.scope.set_busy(False)
+        self._catalogue = list(result.requirements)
+        self._last_documents = list(result.documents.values())
+        self.scope.set_requirements(self._catalogue)
+        self.scope.show_index_state(
+            result.summary(),
+            len(result.documents),
+            len(result.requirements),
+            result.warnings,
+        )
+        for warning in result.warnings[:5]:
+            self.log_line(f"Import warning: {warning}")
+        message = (
+            f"Index ready: {len(result.documents)} document(s), "
+            f"{len(result.requirements)} requirement(s) ({result.summary()})"
+        )
+        self.log_line(message)
+        self.statusBar().showMessage(message)
+
+    def _on_index_failed(self, message: str) -> None:
+        self.scope.set_busy(False)
+        self.log_line(f"Index failed: {message}")
+        self.statusBar().showMessage("Index failed")
+        QMessageBox.critical(self, "Index failed", message)
+
+    # =================================================================
+    # guidance
+    # =================================================================
+    def load_guidance(self) -> None:
+        name, _ = QFileDialog.getOpenFileName(
+            self, "Load project guidance", filter="Text (*.txt *.md);;All files (*)"
+        )
+        if not name:
+            return
+        try:
+            self.guidance.setPlainText(Path(name).read_text(encoding="utf-8"))
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not read the file", str(exc))
+            return
+        self._guidance_path = Path(name)
+        self.lbl_guidance.setText(Path(name).name)
+        self.log_line(f"Guidance loaded from {name}")
+
+    def save_guidance(self) -> None:
+        name, _ = QFileDialog.getSaveFileName(
+            self, "Save project guidance", "guidance.md",
+            filter="Text (*.txt *.md);;All files (*)",
+        )
+        if not name:
+            return
+        try:
+            Path(name).write_text(self.guidance.toPlainText(), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not write the file", str(exc))
+            return
+        self._guidance_path = Path(name)
+        self.lbl_guidance.setText(Path(name).name)
+        self.log_line(f"Guidance saved to {name}")
+
+    # =================================================================
     # run
     # =================================================================
     def specifications(self) -> list[Path]:
         return list(self._spec_paths)
 
     def start_run(self) -> None:
-        specs = self.specifications()
+        specs = self.specifications() or self.knowledge_paths()
         if not specs:
             QMessageBox.warning(
-                self, "No document", "Select a PDF, TXT or Markdown file first."
+                self,
+                "No document",
+                "Select a knowledge base or a specification file first.",
+            )
+            return
+        scope_ids = self.scope.selected_ids() or None
+        if self._catalogue and scope_ids is None:
+            QMessageBox.warning(
+                self,
+                "No scope",
+                "Select the requirements that should get test cases. "
+                "The knowledge base stays available as context.",
             )
             return
         if not self.model_name.currentText().strip():
@@ -774,7 +962,14 @@ class MainWindow(QMainWindow):
         self.findings.setHtml("<p>Running…</p>")
         self.summary.setHtml("<p>Running…</p>")
 
-        task = DraftTask(specs, self.collect_config())
+        task = DraftTask(
+            specs,
+            self.collect_config(),
+            scope_ids=scope_ids,
+            task_description=self.task_description.toPlainText().strip() or None,
+            guidance=self.guidance.toPlainText().strip() or None,
+            index_path=self._index_path,
+        )
         self._task = task
         task.signals.progress.connect(self.progress.setValue)
         task.signals.message.connect(self.log_line)
@@ -853,12 +1048,12 @@ class MainWindow(QMainWindow):
         self._fill_drafts_from_project()
         self._fill_findings(run)
         self._fill_context(run)
+        self._fill_specification()
         self._cases = legacy_rows(
             self._project.test_cases if self._project else run.test_cases
         )
         self.table.model().update_cases(self._cases)
-        self.btn_save_csv.setEnabled(bool(self._cases))
-        self.btn_save_xlsx.setEnabled(bool(self._cases))
+        self._enable_exports(bool(self._cases))
         self._fill_summary()
 
         label = STATUS_LABELS.get(run.status.value, run.status.value)
@@ -877,7 +1072,12 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message)
 
     def _absorb_run(self, run) -> None:
-        """Keep the result as a project so it can be reviewed and saved."""
+        """Keep the result as a project so it can be reviewed and saved.
+
+        The project holds the whole catalogue, not only the generated scope:
+        a requirement without a draft has to stay visible, and references need
+        their targets.
+        """
         if self._project is None:
             self._project = project_from_run(
                 run,
@@ -912,6 +1112,7 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
         self._fill_drafts_from_project()
         self._fill_summary()
+        self._fill_specification()
         self._select_case(case_id)
         counts = self._project.count_by_status()
         self.statusBar().showMessage(
@@ -1017,6 +1218,15 @@ class MainWindow(QMainWindow):
         self.drafts.expandToDepth(0)
         self.tabs.setTabText(0, f"Test drafts ({len(cases)})")
 
+    def _fill_specification(self) -> None:
+        """The deliverable, rebuilt from the project as it stands."""
+        if self._project is None:
+            return
+        self._specification = build_specification(self._project)
+        self.specification.show_specification(self._specification)
+        counts = self._specification.counts()
+        self.tabs.setTabText(4, f"Test specification ({counts['test_cases']})")
+
     def _fill_context(self, run) -> None:
         """Everything that was sent alongside the requirement, and why."""
         self.context.clear()
@@ -1055,7 +1265,7 @@ class MainWindow(QMainWindow):
                 top.addChild(node)
             self.context.addTopLevelItem(top)
         self.context.expandToDepth(0)
-        self.tabs.setTabText(4, f"Context ({total})" if total else "Context")
+        self.tabs.setTabText(5, f"Context ({total})" if total else "Context")
 
     def _fill_findings(self, run) -> None:
         def escape(text: str) -> str:
@@ -1165,11 +1375,77 @@ class MainWindow(QMainWindow):
     # =================================================================
     # export
     # =================================================================
+    def _enable_exports(self, enabled: bool) -> None:
+        for button in (
+            self.btn_save_csv,
+            self.btn_save_xlsx,
+            self.btn_export_md,
+            self.btn_export_json,
+        ):
+            button.setEnabled(enabled)
+
+    def current_specification(self):
+        """The specification for what the export selector asks for."""
+        if self._project is None:
+            return None
+        approved_only = self.export_what.currentText() == "Approved only"
+        return build_specification(self._project, approved_only=approved_only)
+
     def export_csv(self) -> None:
         self._export(save_csv, "Export CSV", "CSV files (*.csv)")
 
     def export_xlsx(self) -> None:
         self._export(save_xlsx, "Export Excel", "Excel workbook (*.xlsx)")
+
+    def export_specification_markdown(self) -> None:
+        self._export_specification(
+            save_markdown, "Export specification", "Markdown (*.md)", ".md"
+        )
+
+    def export_specification_json(self) -> None:
+        self._export_specification(
+            save_json, "Export specification", "JSON (*.json)", ".json"
+        )
+
+    def export_specification_xlsx(self) -> None:
+        self._export_specification(
+            save_specification_xlsx,
+            "Export specification",
+            "Excel workbook (*.xlsx)",
+            ".xlsx",
+        )
+
+    def _export_specification(self, writer, title, file_filter, suffix) -> None:
+        spec = self.current_specification()
+        if spec is None:
+            self.log_line("There is nothing to export yet.")
+            return
+        if not spec.entries:
+            QMessageBox.warning(
+                self,
+                "Nothing to export",
+                "The selection contains no test case. With 'Approved only' "
+                "a case has to be approved first.",
+            )
+            return
+        suggested = f"{spec.document_id}{suffix}"
+        path, _ = QFileDialog.getSaveFileName(self, title, suggested, filter=file_filter)
+        if not path:
+            return
+        try:
+            written = writer(spec, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+            return
+        counts = spec.counts()
+        note = "approved only" if spec.approved_only else "drafts included"
+        self.log_line(
+            f"Specification written to {written} "
+            f"({counts['test_cases']} case(s), {note}, "
+            f"{counts['open_questions']} open question(s), "
+            f"{counts['uncovered_requirements']} requirement(s) without a draft)"
+        )
+        QMessageBox.information(self, "Export finished", f"Written to\n{written}")
 
     def _export(self, writer, title: str, file_filter: str) -> None:
         if not self._cases:
@@ -1230,9 +1506,12 @@ class MainWindow(QMainWindow):
         if self._run is not None:
             self._fill_findings(self._run)
             self._fill_context(self._run)
+        self._fill_specification()
+        if project.requirements:
+            self._catalogue = list(project.requirements)
+            self.scope.set_requirements(self._catalogue)
         self._fill_summary()
-        self.btn_save_csv.setEnabled(bool(self._cases))
-        self.btn_save_xlsx.setEnabled(bool(self._cases))
+        self._enable_exports(bool(self._cases))
         self.review.show_case(project, None)
 
         counts = project.count_by_status()

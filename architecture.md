@@ -24,6 +24,7 @@ compatibility modules.
 | `src/spec2test/ui/main_window.py` | the window: settings panel and result views |
 | `src/spec2test/ui/workers.py` | `DraftTask` (the run) and `ModelListTask` (`/api/tags`) |
 | `src/spec2test/ui/review_panel.py` | Review actions and the draft editor |
+| `src/spec2test/ui/scope_panel.py` | Knowledge base, index state, scope, specification view |
 | `src/spec2test/ui/models.py` | Qt table model over the flat export rows |
 | `src/spec2test/ui/app.py` | entry point, also the `spec2test-gui` script |
 | `src/spec2test/config.py` | configuration dataclasses shared by UI, worker and CLI |
@@ -108,6 +109,7 @@ HTTP response objects never cross a port boundary: the application sees
 | `review.py` | Revisions, clarification, accepted findings, approval |
 | `knowledge.py` | Passages, their kind, and the searchable normalised text |
 | `indexing.py` | Keeping the index in step with the documents |
+| `specification.py` | The deliverable, derived from the project |
 | `step_text.py` | The text format a reviewer edits steps in |
 | `deadline.py` | Bounded runtime per job |
 | `legacy.py` | Deprecated bridge for the existing GUI (removed with L2) |
@@ -353,8 +355,31 @@ edits per case, rejections, the revision at which a draft was approved and what
 reviewers objected to. That is the measure for comparing two model or
 retrieval configurations later, beyond a plain approval rate.
 
+## The test specification
+
+`application/specification.build_specification` derives the deliverable from
+the project: requirements with their document and version, test cases with
+steps and expectations, findings, open questions, the context that was used
+and the review status. There is no second text generated beside the data
+model, so the document and the review cannot disagree.
+
+It distinguishes three things a reader would otherwise confuse:
+
+* requirements **in scope** that produced a draft,
+* requirements **in scope without a draft** - a real gap,
+* requirements of the knowledge base that were **never in scope** - context,
+  not a gap.
+
+`adapters/export/specification.py` renders the same object as Markdown, JSON
+and an Excel workbook with separate sheets for test cases, test steps,
+requirement links, open questions and context sources. An action and its
+expectation stay in one row. A draft export states that it is one, and the
+coverage note says plainly that a linked draft is not proof of functional
+coverage.
+
 ## Deliberately not in this delivery
 
-Model-assisted requirement segmentation, Excel export with separate tables for
-steps and requirement links, coverage metrics, streaming, RAG, parallelisation
-and OCR. See the work packages AP 4 and AP 6.
+Embeddings and semantic search, a dedicated review agent, MCP and A2A.
+Model-assisted requirement segmentation, streaming, parallelisation and OCR
+also remain open. The retrieval interface is kept replaceable so an embedding
+index can take the place of the full-text one.

@@ -71,6 +71,39 @@ class ModelListTask(QRunnable):
             self._emit(self.signals.failed, f"{type(exc).__name__}: {exc}")
 
 
+class _IndexSignals(QObject):
+    finished = Signal(object)   # IndexSyncResult
+    failed = Signal(str)
+
+
+class IndexTask(QRunnable):
+    """Build or update the knowledge index off the GUI thread."""
+
+    def __init__(self, paths, index_path, *, rebuild: bool = False) -> None:
+        super().__init__()
+        self.paths = [Path(p) for p in paths]
+        self.index_path = Path(index_path)
+        self.rebuild = rebuild
+        self.signals = _IndexSignals()
+
+    def run(self):  # Qt entry point
+        try:
+            from ..adapters.knowledge import SqliteKnowledgeIndex
+            from ..application.indexing import sync_index
+
+            if self.rebuild and self.index_path.exists():
+                self.index_path.unlink()
+            index = SqliteKnowledgeIndex(self.index_path)
+            result = sync_index(index, self.paths, build_importers())
+            index.close()
+            self.signals.finished.emit(result)
+        except Exception as exc:  # pragma: no cover - defensive
+            try:
+                self.signals.failed.emit(f"{type(exc).__name__}: {exc}")
+            except RuntimeError:
+                pass
+
+
 class _DraftSignals(QObject):
     """Only plain data crosses the thread boundary."""
 
@@ -91,10 +124,19 @@ class DraftTask(QRunnable):
         cfg: dict[str, Any],
         *,
         output_dir: Path | str | None = None,
+        scope_ids: set[str] | None = None,
+        task_description: str | None = None,
+        guidance: str | None = None,
+        index_path: Path | str | None = None,
     ) -> None:
         super().__init__()
         self.specs = [Path(spec) for spec in specs]
         self.cfg = cfg
+        #: internal requirement IDs to generate for; None means all of them
+        self.scope_ids = scope_ids
+        self.task_description = task_description
+        self.guidance = guidance
+        self.index_path = Path(index_path) if index_path else None
         self.output_dir = Path(output_dir) if output_dir else Path.cwd() / "runs"
         self.signals = _DraftSignals()
         self._cancelled = False
@@ -133,13 +175,33 @@ class DraftTask(QRunnable):
         imported = self._import()
         if imported is None:
             return
-        requirements, documents = imported
+        catalogue, documents = imported
         by_id = {document.document_id: document for document in documents}
+
+        requirements = catalogue
+        if self.scope_ids is not None:
+            requirements = [
+                r for r in catalogue if r.requirement_id in self.scope_ids
+            ]
+            if not requirements:
+                self.signals.error.emit(
+                    "None of the selected requirements is in the imported "
+                    "documents."
+                )
+                return
+            self.signals.message.emit(
+                f"Scope: {len(requirements)} of {len(catalogue)} requirement(s); "
+                "the rest can still be used as context"
+            )
+        # the project keeps the whole catalogue: references, context and the
+        # list of requirements without a draft all need it
+        self.signals.requirements.emit(catalogue)
         self.signals.documents.emit(documents)
-        self.signals.requirements.emit(requirements)
 
         gen_settings = generation_settings_from_config(self.cfg)
-        guidance = load_guidance_file(app_cfg.paths.prompt_path)
+        guidance = self.guidance
+        if guidance is None:
+            guidance = load_guidance_file(app_cfg.paths.prompt_path)
         if guidance:
             gen_settings.domain_guidance = guidance
             self.signals.message.emit(
@@ -152,6 +214,13 @@ class DraftTask(QRunnable):
             f"{gen_settings.group_size} requirement(s) per request, "
             f"budget {gen_settings.job_timeout_s}s"
         )
+
+        knowledge = None
+        if gen_settings.use_retrieval and self.index_path:
+            from ..adapters.knowledge import SqliteKnowledgeIndex
+
+            knowledge = SqliteKnowledgeIndex(self.index_path)
+            self.signals.message.emit(f"Knowledge index: {self.index_path}")
 
         def on_progress(update: ProgressUpdate) -> None:
             self.signals.progress.emit(update.percent)
@@ -170,11 +239,18 @@ class DraftTask(QRunnable):
                 log=self.signals.message.emit,
                 should_cancel=lambda: self._cancelled,
                 documents=by_id,
-                catalogue=requirements,
+                catalogue=catalogue,
+                knowledge=knowledge,
             )
         except ModelError as exc:
             self.signals.error.emit(f"{type(exc).__name__}: {exc}")
             return
+        finally:
+            if knowledge is not None:
+                knowledge.close()
+
+        run.task_description = self.task_description
+        run.domain_guidance = guidance
 
         try:
             path = JsonRunStore(self.output_dir).save_run(run)
@@ -220,4 +296,4 @@ class DraftTask(QRunnable):
         return requirements, documents
 
 
-__all__ = ["DraftTask", "ModelListTask"]
+__all__ = ["DraftTask", "IndexTask", "ModelListTask"]
