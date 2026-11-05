@@ -3,8 +3,17 @@
 # The cloud API key is NEVER stored here; it is read from $OLLAMA_API_KEY.
 
 cloud:
-  # explicit mode, no implicit switching: ollama_cloud | ollama_local
-  mode: ollama_cloud
+  # Explicit mode, no implicit switching: ollama_cloud | ollama_local
+  #
+  # ollama_local routes through a local Ollama daemon. If that daemon is signed
+  # in to ollama.com, cloud models run through it and no API key is needed here
+  # - the daemon authenticates. This is the default because it works without
+  # any extra setup.
+  #
+  # ollama_cloud talks to https://ollama.com directly and needs
+  # $OLLAMA_API_KEY (see .env.example). Use it where no local daemon exists,
+  # for example on a server or in CI.
+  mode: ollama_local
   # host override for the selected mode; empty means the default of the mode
   # (cloud: https://ollama.com, local: model.url below)
   host: null
@@ -13,9 +22,11 @@ cloud:
   max_retries: 2
 
 model:
-  # cloud API name as reported by /api/tags - NOT the local alias
-  # (the local CLI/app alias for this model is "gpt-oss:120b-cloud")
-  name: gpt-oss:120b
+  # The model name belongs to the mode:
+  #   ollama_local -> the name "ollama list" shows, e.g. gpt-oss:120b-cloud
+  #   ollama_cloud -> the name https://ollama.com/api/tags reports, e.g. gpt-oss:120b
+  # The two namespaces are never mapped automatically; a mismatch is reported.
+  name: gpt-oss:120b-cloud
   # only used in ollama_local mode
   url: http://localhost:11434
   temperature: 0.2

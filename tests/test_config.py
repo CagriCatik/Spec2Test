@@ -43,9 +43,12 @@ def test_configured_paths_exist_relative_to_the_repository():
 def test_the_new_layer_reads_the_configuration():
     config = load_config(CONFIG)
     settings = ollama_settings_from_config(config)
-    assert settings.mode == MODE_CLOUD
-    assert settings.endpoint == f"{CLOUD_HOST}/api/chat"
-    assert "num_gpu" not in settings.options(), "GPU options are local-only"
+    assert settings.mode in (MODE_CLOUD, MODE_LOCAL)
+
+    # both modes must be reachable from the same file
+    cloud = ollama_settings_from_config(config, mode=MODE_CLOUD)
+    assert cloud.endpoint == f"{CLOUD_HOST}/api/chat"
+    assert "num_gpu" not in cloud.options(), "GPU options are local-only"
 
     local = ollama_settings_from_config(config, mode=MODE_LOCAL)
     assert local.resolved_host == "http://localhost:11434"
@@ -63,11 +66,26 @@ def test_the_legacy_layer_still_reads_the_configuration():
     assert legacy.paths.prompt_path is not None
 
 
-def test_the_documented_model_name_is_not_a_local_alias():
+def test_the_model_name_matches_the_configured_mode():
+    """A local alias belongs to local mode, an API name to cloud mode."""
     from spec2test.adapters.ollama.models import is_local_cloud_alias
 
     config = load_config(CONFIG)
     name = config["model"]["name"]
-    assert not is_local_cloud_alias(name), (
-        f"{name!r} is a local alias; the cloud API expects the /api/tags name"
-    )
+    mode = (config.get("cloud") or {}).get("mode")
+
+    if mode == MODE_CLOUD:
+        assert not is_local_cloud_alias(name), (
+            f"{name!r} is a local alias, but the cloud API expects the "
+            "/api/tags name"
+        )
+    else:
+        assert mode == MODE_LOCAL, f"unexpected mode {mode!r}"
+        # a local daemon accepts both its own models and cloud aliases
+        assert name.strip(), "a model name is required"
+
+
+def test_the_shipped_configuration_documents_both_modes():
+    text = CONFIG.read_text(encoding="utf-8")
+    assert "ollama_local" in text and "ollama_cloud" in text
+    assert "OLLAMA_API_KEY" in text, "the key's source must be documented"

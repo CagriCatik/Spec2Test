@@ -304,3 +304,32 @@ def test_a_missing_configuration_is_not_an_error(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     assert bootstrap.default_config_path() is None
     assert bootstrap.load_config() == {}
+
+
+# =====================================================================
+# The CLI must follow the configured mode, not a hard-coded default
+# =====================================================================
+def test_the_cli_takes_the_mode_from_the_configuration():
+    from spec2test.cli import _resolve_mode
+
+    config = {"cloud": {"mode": "ollama_local"}}
+    assert _resolve_mode(config, None, "fake") == "ollama_local"
+    assert _resolve_mode(config, "ollama_cloud", "fake") == "ollama_cloud"
+    assert _resolve_mode({}, None, "fake") == "fake"
+    assert _resolve_mode({"cloud": {}}, None, "ollama_cloud") == "ollama_cloud"
+
+
+def test_the_shipped_configuration_drives_the_cli(tmp_path, monkeypatch, capsys):
+    """An explicit --mode fake still works for the offline demonstration."""
+    from spec2test import cli
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.yml").write_text(
+        "cloud:\n  mode: ollama_local\nmodel:\n  name: some-model\n", encoding="utf-8"
+    )
+    spec = tmp_path / "spec.md"
+    spec.write_text("SYS-REQ-0001: The system shall react within 100 ms.\n", "utf-8")
+
+    code = cli.main(["run", "--spec", str(spec), "--mode", "fake", "--out", str(tmp_path / "r")])
+    assert code == 0
+    assert "mode: fake" in capsys.readouterr().out

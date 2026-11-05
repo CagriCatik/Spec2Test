@@ -50,7 +50,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="import a specification and generate drafts")
     run.add_argument("--spec", action="append", required=True, type=Path,
                      help="TXT, Markdown or PDF file (repeatable)")
-    run.add_argument("--mode", choices=ALL_MODES, default=MODE_FAKE)
+    run.add_argument(
+        "--mode",
+        choices=ALL_MODES,
+        default=None,
+        help="default: the mode from config.yml, else fake",
+    )
     run.add_argument("--model", default=None)
     run.add_argument("--host", default=None, help="override the API host")
     run.add_argument("--max-cases", type=int, default=None)
@@ -61,7 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, default=None)
 
     models = sub.add_parser("models", help="list the models of the configured host")
-    models.add_argument("--mode", choices=[MODE_CLOUD, MODE_LOCAL], default=MODE_CLOUD)
+    models.add_argument(
+        "--mode",
+        choices=[MODE_CLOUD, MODE_LOCAL],
+        default=None,
+        help="default: the mode from config.yml, else ollama_cloud",
+    )
     models.add_argument("--model", default=None, help="check this name against the list")
     models.add_argument("--host", default=None)
     models.add_argument("--config", type=Path, default=None)
@@ -69,8 +79,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 # --------------------------------------------------------------- commands ---
+def _resolve_mode(config: dict, requested: str | None, fallback: str) -> str:
+    """An explicit --mode wins; otherwise config.yml decides."""
+    return requested or (config.get("cloud") or {}).get("mode") or fallback
+
+
 def _cmd_models(args) -> int:
     config = load_config(args.config)
+    args.mode = _resolve_mode(config, args.mode, MODE_CLOUD)
+    if args.mode not in (MODE_CLOUD, MODE_LOCAL):
+        _out(f"mode {args.mode!r} has no model list; use ollama_cloud or ollama_local")
+        return 1
     settings = ollama_settings_from_config(config, mode=args.mode, model=args.model or "unused")
     if args.host:
         settings = dataclasses.replace(settings, host=args.host)
@@ -94,6 +113,8 @@ def _cmd_models(args) -> int:
 
 def _cmd_run(args) -> int:
     config = load_config(args.config)
+    args.mode = _resolve_mode(config, args.mode, MODE_FAKE)
+    _out(f"mode: {args.mode}")
     gen_settings = generation_settings_from_config(config)
     if args.max_cases is not None:
         gen_settings.max_cases_per_unit = args.max_cases

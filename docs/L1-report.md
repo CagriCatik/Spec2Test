@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  457 bestanden, 5 übersprungen
+pytest -q  →  460 bestanden, 5 übersprungen
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -315,6 +315,36 @@ Die GUI schreibt jetzt nur noch bei einer echten Änderung.
 
 Teststand danach: **437 bestanden, 5 übersprungen**.
 
+### Lokaler Modus als Standard, mit der ausgelieferten Konfiguration nachgewiesen
+
+`config.yml` steht jetzt auf `mode: ollama_local` mit `gpt-oss:120b-cloud`.
+Grund: ist der lokale Ollama-Daemon bei ollama.com angemeldet, laufen
+Cloud-Modelle über ihn, und Spec2Test braucht keinen eigenen Schlüssel – der
+Daemon authentifiziert. Das ist der Weg ohne Zusatzaufwand.
+
+Nachgewiesen ohne jedes Flag, nur mit der ausgelieferten Konfiguration:
+
+```
+$ python -m spec2test.cli models
+7 model(s) at http://localhost:11434: beam:cloud, gemma4:31b-cloud,
+  gpt-oss:120b-cloud, gpt-oss:20b-cloud, nemotron-3-{nano,super,ultra}
+
+$ python -m spec2test.cli run --spec tests/fixtures/specs/spec_b.md
+run …: completed
+  model=gpt-oss:120b-cloud endpoint=http://localhost:11434/api/chat mode=ollama_local
+  units planned=2 accepted=2 rejected=0 not started=0
+  test case drafts=3 open questions=13
+```
+
+Bemerkenswert am Ergebnis: `gpt-oss:120b` lieferte vertragsgültiges JSON ohne
+Reparatur, Schritte mit paarweisen Erwartungen – und stellte von sich aus zwei
+brauchbare Rückfragen statt Signalnamen zu erfinden („What specific signal or
+status flag defines a 'valid self-diagnosis'?"). Genau das soll die Regel
+bewirken.
+
+Dabei fiel auf, dass das CLI den Modus aus `config.yml` ignorierte und immer
+`fake` nahm; `--mode` greift jetzt nur noch als ausdrückliche Übersteuerung.
+
 ### Direkter Cloud-Nachweis weiterhin offen
 
 In dieser Umgebung ist `OLLAMA_API_KEY` nicht gesetzt. Der Adapter meldet das
@@ -328,9 +358,14 @@ $ echo $?
 1
 ```
 
-Der Nachweis steht damit aus und braucht einen Schlüssel in der Umgebung. Der
-frühere Aufruf über einen lokalen Ollama-Server mit Cloud-Modell ersetzt ihn
-nicht – das ist im Review zu Recht festgehalten.
+Der Nachweis steht damit aus und braucht einen Schlüssel in der Umgebung
+(`cp .env.example .env`, Schlüssel von https://ollama.com → Settings → Keys
+eintragen). Der Aufruf über den lokalen Ollama-Server mit Cloud-Modell ersetzt
+ihn nicht – das ist im Review zu Recht festgehalten. Die beiden Wege
+unterscheiden sich im Transport: `ollama_local` schickt `POST
+http://localhost:11434/api/chat` ohne Authorization-Header, `ollama_cloud`
+schickt `POST https://ollama.com/api/chat` mit `Authorization: Bearer …`.
+Abgedeckt ist der Cloud-Weg bisher nur durch Mock-Tests.
 
 ## 11 GUI-Migration und Schlüsselanbindung
 

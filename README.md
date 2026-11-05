@@ -366,8 +366,10 @@ export OLLAMA_API_KEY=...          # cloud mode only
 spec2test models --mode ollama_cloud --model gpt-oss:120b
 
 # full example run: import, generate, validate, show drafts, store the run
-spec2test run --spec requirements/sw_req_spec_ras.md \
-    --mode ollama_cloud --model gpt-oss:120b --out runs
+spec2test run --spec requirements/sw_req_spec_ras.md --out runs
+
+# force a mode regardless of the configuration
+spec2test run --spec my_spec.pdf --mode ollama_cloud --model gpt-oss:120b
 
 # offline demonstration without any network or credentials
 spec2test run --spec tests/fixtures/specs/spec_a.md --mode fake
