@@ -22,10 +22,16 @@ def app():
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path, monkeypatch):
-    """The tests must never read or write the repository's config.yml."""
+    """The tests must never read or write inside the repository.
+
+    config.yml is redirected, and the working directory is moved, so a run
+    started from the GUI stores its result under the temporary path instead of
+    the repository's ``runs/``.
+    """
     import gui
 
     monkeypatch.setattr(gui, "CFG_FILE", tmp_path / "config.yml")
+    monkeypatch.chdir(tmp_path)
     return tmp_path / "config.yml"
 
 

@@ -31,6 +31,9 @@ Desktop.ini
 *.log
 *.tmp
 
+# Generated run data (the CLI and GUI write here by default)
+runs/
+
 # Exported/generated files
 #*.xlsx
 #*.csv
