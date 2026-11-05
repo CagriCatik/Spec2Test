@@ -1,6 +1,13 @@
 # Spec2Test configuration.
+#
+# This file is READ when the application starts and is never written
+# automatically. Change values here for a new session, or change them in the
+# window for the current session only; File > Write settings to config.yml
+# stores them back deliberately (comments are lost when it does).
+#
 # Paths are relative to the repository root so the file stays portable.
-# The cloud API key is NEVER stored here; it is read from $OLLAMA_API_KEY.
+# The cloud API key is NEVER stored here; it is read from $OLLAMA_API_KEY
+# (see .env.example).
 
 cloud:
   # Explicit mode, no implicit switching: ollama_cloud | ollama_local
@@ -41,22 +48,27 @@ model:
   use_gpu: true
 
 generation:
-  # new pipeline (application.generate)
+  # current pipeline (application.generate), used by the window and the CLI
   group_size: 1              # requirements per generation unit
   max_cases_per_unit: 5      # resource ceiling, not a quota
   max_repair_attempts: 2     # bounded repair, then visible rejection
   input_char_budget: 12000   # oversized input is split visibly, never truncated
   job_timeout_s: 900         # bounded runtime per job
-  # legacy GUI path (core.generate_test_cases)
+  # Legacy flat path only (core.generate_test_cases, for existing scripts).
+  # The window no longer offers these; they do not affect a normal run.
   batch_size: 5
   cases_per_prompt: 20
   combine_pages: 5
 
 paths:
-  # portable examples - replace with your own documents
+  # Portable examples - replace with your own documents.
+  # pdf_path: the specification to load at startup (PDF, TXT or Markdown)
   pdf_path: requirements/sw_req_spec_ras.pdf
+  # prompt_path: optional project guidance. It is appended to the generation
+  # rules and cannot override them; it must not prescribe an output format.
   prompt_path: prompts/Prompt_Expert_Test_Architect.txt
 
+# Legacy flat path only; the current pipeline does not use these.
 cache:
   enabled: false
   # relative to the repository root; keep user caches out of version control
@@ -64,6 +76,7 @@ cache:
   max_age_hours: 24
   max_entries: 256
 
+# Legacy flat path only; the current pipeline does not use these.
 rag:
   enabled: false
   chunk_overlap: 0

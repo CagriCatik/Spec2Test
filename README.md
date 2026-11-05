@@ -230,27 +230,41 @@ pip install -e ".[dev]"     # plus pytest
 
 ## Usage
 
-1. Launch the GUI:
+1. Launch the interface:
 
    ```bash
-   python gui.py
+   spec2test-gui          # after pip install -e ".[gui]"
+   python gui.py          # or straight from a checkout
    ```
-2. Upload a requirements PDF.
-3. Adjust parameters like:
+2. Choose one or more specifications (PDF, TXT or Markdown) and, optionally, a
+   project guidance file.
+3. Check the settings on the left: endpoint mode and host, model name and
+   sampling, and the generation limits - drafts per requirement, repair
+   attempts, requirements per request, job budget.
+4. Press **Generate drafts**. **Cancel** stops new requests; a running request
+   ends within its read timeout.
+5. Read the result in the tabs: **Test drafts** (steps, expectations,
+   measurements with their evidence, open questions), **Requirements** (what
+   was captured, with source positions), **Findings** (run report, open
+   questions, rejected and unprocessed requirements), **Export table** and
+   **Log**.
+6. Export the drafts as `.csv` or `.xlsx`.
 
-   * Batch size
-   * Combine pages
-   * Cases per prompt
-   * Parallel prompts
-4. Click Generate to run the test-case creation process.
-5. Review and export results as `.csv` or `.xlsx`.
+`config.yml` is read when the window opens and is never written automatically.
+Changes in the window apply to the current session; *File > Write settings to
+config.yml* stores them back deliberately.
 
-### Automating from scripts / CLI
+### Automating from scripts
 
-When you call `core.generate_test_cases` programmatically (for example from a batch
-script), set `show_progress=True` to render a live `tqdm` bar that mirrors the
-Qt progress callbacks and pass a `logger` (`print` works) to stream
-chunk-by-chunk updates:
+The current pipeline is driven through `spec2test.application.generate.
+generate_drafts` or the `spec2test` command. The legacy flat path below remains
+for existing scripts; it has no requirement traceability and prescribes the old
+output format through the prompts in `prompts/legacy/`.
+
+When you call `core.generate_test_cases` programmatically, set
+`show_progress=True` to render a live `tqdm` bar that mirrors the progress
+callbacks and pass a `logger` (`print` works) to stream block-by-block
+updates:
 
 ```python
 from core import AgentLocal, generate_test_cases
@@ -469,22 +483,45 @@ TTL, and point the cache at faster storage without hand-editing YAML.
 ## Project Structure
 
 ```shell
-tsg/
-├── config.yml              # Default parameter configurations
-├── config_.yml             # Backup or example config
-├── core.py                 # Core logic -> prompt handling, case generation, export
-├── documentation.py        # Embedded HTML documentation for UI
-├── gui.py                  # GUI definition using PySide6
-├── icon.png                # Application icon
-├── qmodels.py              # Qt model for table-based data display
-├── workers.py              # Background threads for async generation
-├── config_models.py        # Dataclasses describing persistent configuration and defaults
-├── tss/                    # Test specification suite
-├── requirements/           # Dummy requirements for rear axle steering
-└── prompts/
-    ├── Prompt_Beginner_Test_Architect.txt
-    ├── Prompt_Advanced_Test_Architect.txt
-    └── Prompt_Expert_Test_Architect.txt
+spec2test/
+├── pyproject.toml              # installable package, CLI and GUI entry points
+├── config.yml                  # read at startup, never written automatically
+├── .env.example                # template for OLLAMA_API_KEY
+├── gui.py                      # launcher for running from a checkout
+├── core.py                     # legacy wrappers for existing scripts
+├── src/spec2test/
+│   ├── domain/                 # data model and rules, no I/O at all
+│   │   ├── models.py
+│   │   └── validation.py
+│   ├── application/            # use cases and ports
+│   │   ├── ports.py            # model, document import, run store, export
+│   │   ├── contracts.py        # strict versioned model contract
+│   │   ├── chunking.py         # block building without page loss
+│   │   ├── ingest.py           # requirement capture with source spans
+│   │   ├── prompts.py          # contract rules plus optional guidance
+│   │   ├── assembly.py         # contract objects to domain objects
+│   │   ├── generate.py         # generation, bounded repair, run status
+│   │   └── legacy.py           # deprecated flat-shape bridge
+│   ├── adapters/
+│   │   ├── ollama/             # HTTP transport and model capabilities
+│   │   ├── documents/          # PDF, TXT and Markdown import
+│   │   ├── persistence/        # atomic JSON run storage
+│   │   ├── export/             # CSV and Excel writers
+│   │   └── fake/               # scripted and rule-based fake models
+│   ├── ui/                     # PySide6 window and Qt workers
+│   │   ├── app.py              # entry point (spec2test-gui)
+│   │   ├── main_window.py
+│   │   ├── workers.py          # DraftTask, ModelListTask
+│   │   ├── models.py           # Qt table model
+│   │   └── help_text.py        # in-app parameter reference
+│   ├── config.py               # configuration dataclasses
+│   ├── bootstrap.py            # configuration to adapters, .env loading
+│   └── cli.py                  # example run and model listing
+├── prompts/                    # project guidance, no format instructions
+│   └── legacy/                 # the old format-prescribing prompts
+├── requirements/               # synthetic rear-axle-steering requirements
+├── tests/                      # unit, layering, UI and opt-in live tests
+└── docs/L1-report.md           # delivery report
 ```
 
 ---

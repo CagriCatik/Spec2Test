@@ -14,13 +14,31 @@ enforces it by parsing the imports of every module.
 | Domain | `src/spec2test/domain/` | Data model and rules | nothing but itself |
 | Application | `src/spec2test/application/` | Use cases and ports | domain |
 | Adapters | `src/spec2test/adapters/` | HTTP, documents, storage, fakes | domain, application |
-| UI | `gui.py`, `workers.py`, `qmodels.py` | PySide6 views and Qt workers | application and adapters |
+| UI | `src/spec2test/ui/` | PySide6 views and Qt workers | application and adapters |
 
-`workers.DraftTask` runs the pipeline for the GUI: import, generate, validate,
-store. `workers.GeneratorTask` is the legacy flat path, still available for
-scripts. `config_models.CloudConfig` carries mode, host and timeouts, and GUI,
-worker and CLI all turn it into `OllamaSettings` through
-`bootstrap.ollama_settings_from_config`, so the three cannot drift apart.
+Everything ships inside the package; the repository root keeps only two thin
+compatibility modules.
+
+| Path | Role |
+| - | - |
+| `src/spec2test/ui/main_window.py` | the window: settings panel and result views |
+| `src/spec2test/ui/workers.py` | `DraftTask` (the run) and `ModelListTask` (`/api/tags`) |
+| `src/spec2test/ui/models.py` | Qt table model over the flat export rows |
+| `src/spec2test/ui/app.py` | entry point, also the `spec2test-gui` script |
+| `src/spec2test/config.py` | configuration dataclasses shared by UI, worker and CLI |
+| `src/spec2test/adapters/export/` | CSV and Excel writers plus the summary |
+| `gui.py` (root) | launcher for running from a checkout |
+| `core.py` (root) | legacy wrappers for existing scripts |
+
+`config.CloudConfig` carries mode, host and timeouts, and the UI, the Qt worker
+and the CLI all turn it into `OllamaSettings` through
+`bootstrap.ollama_settings_from_config`, so the three cannot drift apart. The
+same holds for the limits: `bootstrap.generation_settings_from_config` is the
+only place that builds `GenerationSettings`.
+
+`config.yml` is read at startup and never written automatically. Runtime
+changes live in the window; writing them back is an explicit action in the File
+menu, because the YAML writer cannot preserve the file's comments.
 
 The domain imports no Qt, HTTP, PDF, Excel or even Pydantic. Qt signals and
 HTTP response objects never cross a port boundary: the application sees
@@ -92,6 +110,18 @@ HTTP response objects never cross a port boundary: the application sees
 | `fake/model.py` | `ScriptedModel` and `RuleBasedFakeModel` for tests and CI |
 | `persistence/json_store.py` | Run storage with temp file and atomic replace |
 
+## Prompts
+
+The contract rules are not negotiable. `prompts.build_system_message` always
+starts from `SYSTEM_PROMPT` and appends an optional project guidance file under
+a header that states the guidance has lower precedence. A guidance file can add
+role, coverage wishes and terminology; it can never change the output format,
+because a prompt demanding a different shape would make every answer invalid.
+
+The files in `prompts/` are guidance only. The originals, which prescribe the
+flat legacy array, live in `prompts/legacy/` and belong to
+`core.generate_test_cases`.
+
 ## The model contract
 
 Model answers use one versioned object. There are no mixed types such as
@@ -130,6 +160,10 @@ approve its own output.
 
 An answer is parsed into one of five outcomes, which are never collapsed into
 an empty list: `OK`, `EMPTY`, `INVALID_JSON`, `SCHEMA_INVALID`, `NO_TEST_CASES`.
+
+`max_cases_per_unit` is enforced by the application, not only asked for in the
+prompt: a surplus draft is not accepted and the run records a finding, while
+the raw answer keeps everything.
 
 Ollama Cloud offers no schema-enforced structured outputs, so the `format`
 parameter is not assumed and local validation is mandatory.

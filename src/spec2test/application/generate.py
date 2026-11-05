@@ -41,7 +41,9 @@ class GenerationSettings:
     group_size: int = 1
     input_char_budget: int = 12_000
     job_timeout_s: float | None = 900.0
-    system_prompt: str | None = None
+    #: optional project guidance, appended to - never replacing - the contract
+    #: rules of the system prompt
+    domain_guidance: str | None = None
 
 
 @dataclass
@@ -270,7 +272,7 @@ def _process_unit(
     messages = build_generation_messages(
         unit.requirements,
         max_cases=settings.max_cases_per_unit,
-        system_prompt=settings.system_prompt,
+        domain_guidance=settings.domain_guidance,
     )
     attempt_no = 0
     last_raw = ""
@@ -357,6 +359,23 @@ def _process_unit(
             )
         )
 
+        if len(accepted) > settings.max_cases_per_unit:
+            # The prompt asks for a ceiling; the application enforces it, so a
+            # talkative model cannot blow up the resource budget. The discarded
+            # cases stay in the raw answer of this attempt.
+            discarded = len(accepted) - settings.max_cases_per_unit
+            accepted = accepted[: settings.max_cases_per_unit]
+            issues.append(
+                ValidationIssue(
+                    "C_CASE_LIMIT_ENFORCED",
+                    Severity.CLARIFICATION,
+                    unit.unit_id,
+                    f"the model returned {discarded} test case(s) more than the "
+                    f"limit of {settings.max_cases_per_unit}; the surplus was not "
+                    "accepted and remains only in the raw answer",
+                )
+            )
+
         blocking = [i for i in issues if i.severity is Severity.ERROR]
         if accepted and not blocking:
             result.status = UnitStatus.ACCEPTED
@@ -394,7 +413,7 @@ def _process_unit(
             last_raw,
             blocking,
             max_cases=settings.max_cases_per_unit,
-            system_prompt=settings.system_prompt,
+            domain_guidance=settings.domain_guidance,
         )
 
 

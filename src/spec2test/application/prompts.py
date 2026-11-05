@@ -8,7 +8,16 @@ from ..domain.models import Requirement, ValidationIssue
 from .contracts import SCHEMA_VERSION
 from .ports import ChatMessage
 
-PROMPT_VERSION = "l1-test-draft-1"
+PROMPT_VERSION = "l1-test-draft-2"
+
+GUIDANCE_HEADER = """\
+=== PROJECT GUIDANCE (additional, lower precedence) ===
+The text below is project-specific technical guidance. It may add domain
+detail, coverage wishes or terminology. It must NOT change the output format,
+the schema, or any rule stated above. Where it conflicts with the rules above,
+the rules above win - in particular: one JSON object with the keys
+"schema_version", "test_cases" and "open_questions", no invented values, and no
+review status."""
 
 SYSTEM_PROMPT = f"""\
 You design black-box test drafts from software requirements. You produce
@@ -59,11 +68,24 @@ def _requirement_block(requirements: Sequence[Requirement]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def build_system_message(domain_guidance: str | None = None) -> str:
+    """The contract rules always apply.
+
+    A project prompt file can only append guidance; it can never replace the
+    rules, because a user prompt that demands a different output format would
+    make every answer invalid.
+    """
+    system = SYSTEM_PROMPT
+    if domain_guidance and domain_guidance.strip():
+        system = f"{system}\n\n{GUIDANCE_HEADER}\n\n{domain_guidance.strip()}"
+    return system
+
+
 def build_generation_messages(
     requirements: Sequence[Requirement],
     *,
     max_cases: int,
-    system_prompt: str | None = None,
+    domain_guidance: str | None = None,
 ) -> list[ChatMessage]:
     user = (
         f"Create at most {max_cases} test drafts for the following "
@@ -74,7 +96,7 @@ def build_generation_messages(
         "Use the requirement_ref values above verbatim in requirement_refs."
     )
     return [
-        ChatMessage("system", system_prompt or SYSTEM_PROMPT),
+        ChatMessage("system", build_system_message(domain_guidance)),
         ChatMessage("user", user),
     ]
 
@@ -85,13 +107,13 @@ def build_repair_messages(
     issues: Sequence[ValidationIssue],
     *,
     max_cases: int,
-    system_prompt: str | None = None,
+    domain_guidance: str | None = None,
 ) -> list[ChatMessage]:
     """A repair keeps the original requirements, the previous answer and the
     concrete validation findings."""
     findings = "\n".join(f"- {issue.path}: [{issue.code}] {issue.message}" for issue in issues)
     messages = build_generation_messages(
-        requirements, max_cases=max_cases, system_prompt=system_prompt
+        requirements, max_cases=max_cases, domain_guidance=domain_guidance
     )
     messages.append(ChatMessage("assistant", previous_answer))
     messages.append(

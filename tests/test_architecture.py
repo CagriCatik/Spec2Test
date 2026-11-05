@@ -17,6 +17,7 @@ FORBIDDEN_IN_DOMAIN = {
     "PySide6", "PyQt5", "PyQt6", "requests", "httpx", "urllib", "fitz", "pymupdf",
     "PyPDF2", "pypdf", "pandas", "openpyxl", "yaml", "sklearn", "pydantic",
 }
+FORBIDDEN_IN_UI: set[str] = set()  # the UI may use Qt and the adapters
 FORBIDDEN_IN_APPLICATION = {
     "PySide6", "PyQt5", "PyQt6", "requests", "httpx", "fitz", "pymupdf", "PyPDF2",
     "pypdf", "pandas", "openpyxl", "sklearn",
@@ -76,12 +77,38 @@ def test_application_does_not_import_concrete_adapters(path):
     )
 
 
+@pytest.mark.parametrize("path", python_files("application"), ids=lambda p: p.name)
+def test_application_does_not_import_the_user_interface(path):
+    offending = {t for t in relative_import_targets(path) if t.startswith("ui")}
+    assert not offending, f"{path.name} imports {sorted(offending)}"
+
+
+@pytest.mark.parametrize("path", python_files("adapters"), ids=lambda p: p.name)
+def test_adapters_do_not_import_the_user_interface(path):
+    offending = {t for t in relative_import_targets(path) if t.startswith("ui")}
+    assert not offending, f"{path.name} imports {sorted(offending)}"
+
+
+@pytest.mark.parametrize("path", python_files("ui"), ids=lambda p: p.name)
+def test_the_interface_lives_inside_the_package(path):
+    """The UI is part of the package, not a set of loose root modules."""
+    assert path.is_relative_to(SRC / "ui")
+
+
+@pytest.mark.parametrize("path", python_files("ui"), ids=lambda p: p.name)
+def test_the_interface_does_not_import_root_level_modules(path):
+    """An installed package cannot import core.py or config_models.py."""
+    forbidden = {"core", "config_models", "qmodels", "workers", "gui", "documentation"}
+    offending = imported_modules(path) & forbidden
+    assert not offending, f"{path.name} imports the root module(s) {sorted(offending)}"
+
+
 @pytest.mark.parametrize("path", python_files("domain"), ids=lambda p: p.name)
 def test_domain_depends_on_nothing_but_itself(path):
     offending = {
         target
         for target in relative_import_targets(path)
-        if target.startswith(("application", "adapters", "ui"))
+        if target.startswith(("application", "adapters", "ui", "config"))
     }
     assert not offending, f"{path.name} imports {sorted(offending)}"
 

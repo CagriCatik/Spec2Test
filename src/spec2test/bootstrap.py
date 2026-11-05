@@ -134,13 +134,24 @@ def ollama_settings_from_config(
 
 
 def generation_settings_from_config(config: dict[str, Any]) -> GenerationSettings:
+    """The single conversion used by the GUI, the Qt worker and the CLI.
+
+    ``cases_per_prompt`` of the legacy configuration is accepted as a fallback,
+    but an explicit ``max_cases_per_unit`` always wins - otherwise an old
+    widget value would silently override the new setting.
+    """
     gen = config.get("generation") or {}
+    cloud = config.get("cloud") or {}
+    max_cases = gen.get("max_cases_per_unit")
+    if max_cases is None:
+        max_cases = gen.get("cases_per_prompt", 5)
+    job_timeout = gen.get("job_timeout_s", cloud.get("job_timeout_s", 900.0))
     return GenerationSettings(
-        max_cases_per_unit=int(gen.get("max_cases_per_unit", 5)),
-        max_repair_attempts=int(gen.get("max_repair_attempts", 2)),
-        group_size=int(gen.get("group_size", 1)),
-        input_char_budget=int(gen.get("input_char_budget", 12_000)),
-        job_timeout_s=gen.get("job_timeout_s", 900.0),
+        max_cases_per_unit=max(1, int(max_cases)),
+        max_repair_attempts=max(0, int(gen.get("max_repair_attempts", 2))),
+        group_size=max(1, int(gen.get("group_size", 1))),
+        input_char_budget=max(1, int(gen.get("input_char_budget", 12_000))),
+        job_timeout_s=job_timeout,
     )
 
 

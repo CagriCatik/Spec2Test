@@ -28,6 +28,9 @@ dev = ["pytest>=8.2"]
 [project.scripts]
 spec2test = "spec2test.cli:main"
 
+[project.gui-scripts]
+spec2test-gui = "spec2test.ui.app:main"
+
 [tool.setuptools]
 package-dir = { "" = "src" }
 

@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  460 bestanden, 5 übersprungen
+pytest -q  →  523 bestanden, 5 übersprungen
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -421,6 +421,78 @@ erweiterte GUI- und Generierungstests).
 
 Entwürfe sind nur lesbar: Bearbeiten, Freigeben und das Wiederöffnen eines
 gespeicherten Projekts samt Revisionen sind die nächsten Schritte (AP 5).
+
+## 12 Review von `5332383` und Umbau der Oberfläche
+
+### Prompt-Konflikt (höchste Priorität)
+
+Bestätigt, und mit einem echten Modellaufruf belegt: mit der ausgelieferten
+`config.yml` ersetzte die Promptdatei die Vertragsregeln vollständig. Im
+Systemprompt fehlten `schema_version`, `test_cases`, das Verbot erfundener
+Werte und der Hinweis, dass Dokumentinhalt Eingabedaten sind; stattdessen
+stand dort die Forderung nach dem alten Array. `gpt-oss:120b` antwortete
+daraufhin mit `[]` – null Entwürfe.
+
+`prompts.build_system_message` setzt jetzt immer auf `SYSTEM_PROMPT` auf und
+hängt eine Projektdatei unter einer Überschrift an, die ihren niedrigeren Rang
+benennt. Die drei mitgelieferten Dateien enthalten nur noch fachliche
+Hinweise (Rolle, Abdeckungswünsche, Terminologie, Umgang mit Lücken); die
+formatvorschreibenden Originale liegen mit Erklärung in `prompts/legacy/` und
+gehören zu `core.generate_test_cases`, dessen Parser genau dieses Format
+erwartet. Regressionstests prüfen jede ausgelieferte Promptdatei und den
+tatsächlichen Pfad mit der ausgelieferten Konfiguration.
+
+### Einstellungen und Fallzahlgrenze
+
+Bestätigt: `config.yml` nannte `max_cases_per_unit: 5`, die GUI überschrieb es
+mit `cases_per_prompt: 20`, und ein auf einen Fall begrenzter Lauf nahm drei
+Fälle an. `generation_settings_from_config` ist jetzt die einzige Stelle, die
+`GenerationSettings` baut; der alte Wert zählt nur noch als Rückfallwert, und
+Unsinnswerte werden begrenzt. Die Obergrenze wird in `_process_unit` erzwungen:
+überzählige Entwürfe werden nicht übernommen, der Lauf erhält den Befund
+`C_CASE_LIMIT_ENFORCED`, und die Rohantwort behält alles.
+
+### Modellabfrage blockiert nicht mehr
+
+`ModelListTask` holt `/api/tags` im Hintergrund mit 3 s Verbindungs- und 5 s
+Lesezeitlimit. Der Fensteraufbau greift gar nicht mehr aufs Netz zu; die
+Abfrage startet erst, wenn die Ereignisschleife läuft. Während des Ladens ist
+die Schaltfläche deaktiviert und beschriftet, ein Fehlschlag stellt sie wieder
+her und lässt den konfigurierten Modellnamen unangetastet.
+
+### Oberfläche nach `src/`, ohne Dekoration
+
+Auf Wunsch des Auftraggebers liegt die Oberfläche jetzt im Paket:
+`src/spec2test/ui/` mit `main_window.py`, `workers.py`, `models.py`,
+`help_text.py` und `app.py`. Mitgezogen sind `config_models.py` →
+`spec2test/config.py` und die Exporter → `spec2test/adapters/export/`, damit
+das Paket keine Wurzelmodule mehr importiert; Testregeln erzwingen das. Im
+Wurzelverzeichnis bleiben nur `gui.py` als Starter und `core.py` als
+Legacy-Schicht, dazu ein `config_models.py`-Shim. Neuer Einstiegspunkt
+`spec2test-gui`.
+
+Das Fenster wurde neu geschrieben: keine Emoji-Dekoration mehr (ein Test
+verbietet Symbolzeichen in `ui/`), ein gegliederter Einstellungsbereich
+(Eingabe, Endpunkt, Modell, Generierung) in einem Scrollbereich, fünf
+Ergebnisreiter und eine Aktionsleiste mit schlankem Fortschrittsbalken. Die
+toten Legacy-Regler – Seitenblöcke, Parallelität, RAG, Cache – sind
+verschwunden, weil die Pipeline sie nicht verwendet; in `config.yml` bleiben
+sie für den Skriptpfad erhalten und sind dort als solche gekennzeichnet.
+Der Laufbericht wird als Tabelle statt als abgeschnittener Vorformatblock
+dargestellt.
+
+### `config.yml` wird nicht mehr überschrieben
+
+Der Auftraggeber bemängelte, dass die Datei sich durch Arbeiten in der GUI
+ändert. Das war reproduzierbar – auch auf der Arbeitskopie dieses Berichts
+hatte die alte Oberfläche beim Schließen Kommentare entfernt und den Modus
+zurückgesetzt. Die Datei wird jetzt **nur beim Start gelesen**. Änderungen im
+Fenster gelten für die Sitzung; `Datei > Write settings to config.yml`
+schreibt sie auf ausdrückliche Bestätigung zurück und erhält dabei unbekannte
+Abschnitte. Ein Test schließt das Fenster nach Änderungen und prüft, dass die
+Datei byteweise unverändert bleibt.
+
+Teststand: **523 bestanden, 5 übersprungen**.
 
 ## 9 Commits
 

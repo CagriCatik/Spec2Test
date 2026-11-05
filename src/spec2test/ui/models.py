@@ -1,10 +1,11 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# file: qmodels.py
-# ─────────────────────────────────────────────────────────────────────────────
+"""Qt table model over the flat export rows."""
 from __future__ import annotations
-from typing import List, Dict
-from PySide6.QtCore import QAbstractTableModel, Qt, QModelIndex
-from core import ALLOWED_KEYS  # column order
+
+from typing import Dict, List
+
+from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
+
+from ..adapters.export import COLUMNS as ALLOWED_KEYS
 
 
 class TestCaseTableModel(QAbstractTableModel):

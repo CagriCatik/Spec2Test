@@ -1,4 +1,9 @@
-"""Compatibility layer for the existing entry points.
+"""Legacy compatibility layer.
+
+Everything here is a thin wrapper around ``src/spec2test``. New code should use
+the package directly: ``spec2test.application.generate.generate_drafts`` for
+generation, ``spec2test.adapters.export`` for CSV and Excel, and
+``spec2test.ui`` for the interface.
 
 The implementation now lives in ``src/spec2test``:
     application.chunking   - block building without page loss
@@ -11,16 +16,12 @@ New code should call ``spec2test.application.generate.generate_drafts``.
 """
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import logging
-import re
 import sys
 import time
-from collections import Counter
 from pathlib import Path
-from statistics import mean
 from typing import Callable, Dict, List, Sequence
 
 try:  # pragma: no cover - import guard for optional progress dependency
@@ -28,9 +29,7 @@ try:  # pragma: no cover - import guard for optional progress dependency
 except Exception:  # pragma: no cover - keep working without tqdm installed
     tqdm = None  # type: ignore[assignment]
 
-import pandas as pd
-import requests
-from openpyxl.utils import get_column_letter
+import requests  # re-exported: tests simulate transport errors through it
 
 _SRC = Path(__file__).resolve().parent / "src"
 if str(_SRC) not in sys.path:
@@ -58,10 +57,13 @@ from spec2test.application.legacy import (  # noqa: E402
     generate_legacy_cases,
     parse_legacy_cases,
 )
+from spec2test.adapters.export import save_csv as _save_csv  # noqa: E402
+from spec2test.adapters.export import save_xlsx as _save_xlsx  # noqa: E402
+from spec2test.adapters.export import summarise_rows as _summarise_rows  # noqa: E402
 from spec2test.application.ports import ChatMessage  # noqa: E402
 from spec2test.domain.models import RunStatus  # noqa: E402
 
-from config_models import (
+from spec2test.config import (  # noqa: E402
     DEFAULT_GPU_LAYERS,
     DEFAULT_MAIN_GPU,
     DEFAULT_MAX_TOKENS,
@@ -76,7 +78,12 @@ from config_models import (
 )
 
 # ------------------------------ prompt role ---------------------------------
-PROMPT_FILE = Path(__file__).parent / "prompts" / "Prompt_Expert_Test_Architect.txt"
+# The legacy path needs the legacy prompt: it must ask for the flat JSON array
+# that `parse_legacy_cases` understands. The files in prompts/ are project
+# guidance for the current pipeline and no longer prescribe a format.
+PROMPT_FILE = (
+    Path(__file__).parent / "prompts" / "legacy" / "Prompt_Expert_Test_Architect.txt"
+)
 PROMPT_ROLE = PROMPT_FILE.read_text(encoding="utf-8").strip()
 
 # ------------------------------ constants -----------------------------------
@@ -561,99 +568,17 @@ def generate_test_cases(
     return cases
 
 
-def _normalise_list(val) -> list[str]:
-    if isinstance(val, list):
-        return [str(v).strip() for v in val if str(v).strip()]
-    if isinstance(val, str):
-        return [p.strip() for p in re.split(r"[,;\n]+", val) if p.strip()]
-    return []
-
-
-def _count_steps(value) -> int:
-    if isinstance(value, list):
-        return len([v for v in value if str(v).strip()])
-    if isinstance(value, str):
-        return len([v for v in re.split(r"\n+|;", value) if v.strip()])
-    return 0
-
-
 def summarise_cases(cases: Sequence[Dict]) -> Dict[str, object]:
-    """Simple analytics about generated cases for quick QA."""
-    total = len(cases)
-    missing_counts = {field: 0 for field in ALLOWED_KEYS}
-    complete_cases = 0
-    requirement_counter: Counter[str] = Counter()
-    name_counter: Counter[str] = Counter()
-    action_lengths: list[int] = []
-    result_lengths: list[int] = []
-
-    for case in cases:
-        missing = False
-        for field in ALLOWED_KEYS:
-            value = case.get(field, "")
-            if not str(value).strip():
-                missing_counts[field] += 1
-                if field in REQUIRED:
-                    missing = True
-        if not missing:
-            complete_cases += 1
-
-        for req in _normalise_list(case.get("linked_requirements", [])):
-            requirement_counter[req] += 1
-
-        name = str(case.get("testcase_name", "")).strip()
-        if name:
-            name_counter[name] += 1
-
-        action_lengths.append(_count_steps(case.get("actions")))
-        result_lengths.append(_count_steps(case.get("expected_results")))
-
-    duplicates = [name for name, count in name_counter.items() if count > 1]
-    avg_actions = mean([n for n in action_lengths if n]) if any(action_lengths) else 0
-    avg_results = mean([n for n in result_lengths if n]) if any(result_lengths) else 0
-
-    return {
-        "total_cases": total,
-        "complete_cases": complete_cases,
-        "missing_fields": missing_counts,
-        "unique_requirements": len(requirement_counter),
-        "top_requirements": requirement_counter.most_common(5),
-        "duplicate_names": duplicates,
-        "avg_actions": round(avg_actions, 2) if avg_actions else 0,
-        "avg_expected_results": round(avg_results, 2) if avg_results else 0,
-    }
+    """Simple analytics about generated cases. See adapters.export."""
+    return _summarise_rows(cases)
 
 
 # ------------------------------ writers -------------------------------------
-def _serialise(val):
-    if isinstance(val, list):
-        return "\n".join(map(str, val))
-    return str(val)
-
-
+# The exporters moved to spec2test.adapters.export; these names stay for
+# existing scripts.
 def save_csv(cases: List[Dict], path: str) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=ALLOWED_KEYS)
-        writer.writeheader()
-        for row in cases:
-            writer.writerow({k: _serialise(v) for k, v in row.items()})
+    _save_csv(cases, path)
 
 
 def save_xlsx(cases: List[Dict], path: str) -> None:
-    df = pd.DataFrame(
-        [{k: _serialise(v) for k, v in r.items()} for r in cases],
-        columns=ALLOWED_KEYS,
-    )
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(path, engine="openpyxl") as xl:
-        df.to_excel(xl, index=False, sheet_name="TestCases")
-        ws = xl.sheets["TestCases"]
-        for idx, col in enumerate(df.columns, 1):
-            values = [str(v) for v in df[col] if str(v).strip()]
-            if not values:
-                continue
-            maxlen = max(max(map(len, values)), len(col)) + 2
-            ws.column_dimensions[get_column_letter(idx)].width = maxlen
+    _save_xlsx(cases, path)
