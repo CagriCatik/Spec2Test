@@ -9,6 +9,12 @@ from ...application.ports import ImportedDocument, TextSegment
 from ...domain.models import DocumentFormat, SourceDocument
 
 _HEADING = re.compile(r"^(#{1,6})\s*(.+?)\s*$", re.MULTILINE)
+# Metadata a document declares about itself, e.g. "**Version:** 2.4.0"
+_DECLARED = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*\*|__)?\s*(?P<key>Document ID|Dokument-ID|Version)"
+    r"\s*:?\s*(?:\*\*|__)?\s*:?\s*(?P<value>\S[^\n]*?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 _SUFFIXES = {".txt": DocumentFormat.TXT, ".md": DocumentFormat.MARKDOWN,
              ".markdown": DocumentFormat.MARKDOWN}
 
@@ -23,6 +29,7 @@ class TextDocumentImporter:
         path = Path(path)
         text = path.read_text(encoding="utf-8")
         fmt = _SUFFIXES.get(path.suffix.lower(), DocumentFormat.TXT)
+        declared_id, version = declared_metadata(text)
         document = SourceDocument(
             document_id=f"{path.stem}-{content_hash(text)[:8]}",
             filename=path.name,
@@ -30,6 +37,8 @@ class TextDocumentImporter:
             content_hash=content_hash(text),
             text=text,  # unmodified source text
             page_count=1,
+            declared_id=declared_id,
+            version=version,
         )
         segments = _sections(text)
         warnings: list[str] = []
@@ -38,6 +47,19 @@ class TextDocumentImporter:
         return ImportedDocument(
             document=document, segments=segments, warnings=tuple(warnings)
         )
+
+
+def declared_metadata(text: str) -> tuple[str | None, str | None]:
+    """The document ID and version a document states about itself."""
+    declared_id = version = None
+    for match in _DECLARED.finditer(text[:4000]):
+        key = match.group("key").lower()
+        value = match.group("value").strip().rstrip("*").strip()
+        if key.startswith(("document id", "dokument")) and declared_id is None:
+            declared_id = value
+        elif key == "version" and version is None:
+            version = value
+    return declared_id, version
 
 
 def _sections(text: str) -> tuple[TextSegment, ...]:

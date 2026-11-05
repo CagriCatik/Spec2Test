@@ -148,6 +148,9 @@ def generation_settings_from_config(config: dict[str, Any]) -> GenerationSetting
         max_cases = gen.get("cases_per_prompt", 5)
     job_timeout = gen.get("job_timeout_s", cloud.get("job_timeout_s", 900.0))
     return GenerationSettings(
+        use_reference_context=bool(gen.get("use_reference_context", True)),
+        context_char_budget=max(0, int(gen.get("context_char_budget", 6_000))),
+        max_context_items=max(0, int(gen.get("max_context_items", 5))),
         max_cases_per_unit=max(1, int(max_cases)),
         max_repair_attempts=max(0, int(gen.get("max_repair_attempts", 2))),
         group_size=max(1, int(gen.get("group_size", 1))),

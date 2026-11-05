@@ -9,9 +9,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 from ..domain.models import (
+    SourceDocument,
     GenerationAttempt,
     GenerationRun,
     GenerationUnitResult,
@@ -26,6 +27,14 @@ from ..domain.models import (
 )
 from ..domain.validation import ValidationReport, validate_test_case
 from .assembly import build_from_response
+from .context import (
+    DEFAULT_CONTEXT_CHAR_BUDGET,
+    DEFAULT_MAX_CONTEXT_ITEMS,
+    ContextSelection,
+    build_reference_context,
+    detect_contradictions,
+)
+from .ingest import ReferenceReport, reference_report
 from .contracts import SCHEMA_VERSION, ParseOutcome, parse_model_response
 from .deadline import Deadline, DeadlineExceeded
 from .ports import ModelError, ModelPort
@@ -44,6 +53,10 @@ class GenerationSettings:
     #: optional project guidance, appended to - never replacing - the contract
     #: rules of the system prompt
     domain_guidance: str | None = None
+    #: send the requirements a unit cites as supporting context
+    use_reference_context: bool = True
+    context_char_budget: int = DEFAULT_CONTEXT_CHAR_BUDGET
+    max_context_items: int = DEFAULT_MAX_CONTEXT_ITEMS
 
 
 @dataclass
@@ -140,7 +153,11 @@ def generate_drafts(
     progress: ProgressCallback | None = None,
     log: LogCallback | None = None,
     should_cancel: CancelCheck | None = None,
+    documents: Mapping[str, SourceDocument] | None = None,
+    catalogue: Sequence[Requirement] | None = None,
 ) -> GenerationRun:
+    """``catalogue`` is the full requirement set references are resolved in;
+    it defaults to the requirements being generated for."""
     settings = settings or GenerationSettings()
     descriptor = model.descriptor
     run = GenerationRun(
@@ -153,6 +170,11 @@ def generate_drafts(
         source_hash=source_hash,
         parameters=dict(descriptor.parameters),
         started_at=_now(),
+    )
+    references = (
+        reference_report(list(catalogue if catalogue is not None else requirements))
+        if settings.use_reference_context
+        else None
     )
     deadline = Deadline(settings.job_timeout_s)
     # a short token of the run id keeps IDs unique when a project collects
@@ -191,7 +213,9 @@ def generate_drafts(
             run.units.extend(_not_started(units[index - 1 :], reason))
             break
 
-        result = _process_unit(unit, model, settings, deadline, log)
+        result = _process_unit(
+            unit, model, settings, deadline, log, references, documents or {}
+        )
         run.units.append(result)
         if result.fatal_error:
             run.errors.append(
@@ -228,6 +252,21 @@ def generate_drafts(
     return run
 
 
+def context_issues_of(result: GenerationUnitResult) -> list[ValidationIssue]:
+    """The context findings recorded before the first model call."""
+    return [
+        issue
+        for issue in result.issues
+        if issue.code
+        in {
+            "C_UNRESOLVED_REFERENCE",
+            "C_AMBIGUOUS_REFERENCE",
+            "C_CONTEXT_OMITTED",
+            "C_CONTRADICTORY_SOURCES",
+        }
+    ]
+
+
 def _not_started(units: Sequence["_Unit"], reason: str) -> list[GenerationUnitResult]:
     """Record planned units that never reached the model, with their sources."""
     return [
@@ -255,6 +294,8 @@ def _process_unit(
     settings: GenerationSettings,
     deadline: Deadline,
     log: LogCallback | None,
+    references: ReferenceReport | None = None,
+    documents: Mapping[str, SourceDocument] | None = None,
 ) -> GenerationUnitResult:
     result = GenerationUnitResult(
         unit_id=unit.unit_id,
@@ -262,6 +303,32 @@ def _process_unit(
         status=UnitStatus.REJECTED,
         source_spans=unit.spans,
     )
+
+    selection = ContextSelection()
+    if references is not None:
+        selection = build_reference_context(
+            unit.requirements,
+            references,
+            documents=documents or {},
+            char_budget=settings.context_char_budget,
+            max_items=settings.max_context_items,
+        )
+        # stored verbatim: the run stays explainable after the documents change
+        result.context = selection.items
+        context_issues = [
+            *selection.issues,
+            *detect_contradictions(unit.requirements, selection.items),
+        ]
+        result.issues.extend(context_issues)
+        if selection.items:
+            _log(
+                log,
+                f"  {unit.unit_id}: {len(selection.items)} supporting context "
+                f"requirement(s): "
+                + ", ".join(
+                    item.external_id or item.requirement_id for item in selection.items
+                ),
+            )
 
     if unit.char_size > settings.input_char_budget:
         result.issues.append(
@@ -280,6 +347,7 @@ def _process_unit(
         unit.requirements,
         max_cases=settings.max_cases_per_unit,
         domain_guidance=settings.domain_guidance,
+        context=selection.items,
     )
     attempt_no = 0
     last_raw = ""
@@ -328,7 +396,9 @@ def _process_unit(
             )
             per_case: list[tuple[TestCase, ValidationReport]] = []
             for case in cases:
-                report = validate_test_case(case, unit.requirements)
+                report = validate_test_case(
+                    case, unit.requirements, context=selection.items
+                )
                 per_case.append((case, report))
                 issues.extend(report.issues)
             accepted = [case for case, report in per_case if not report.blocks_draft]
@@ -390,7 +460,10 @@ def _process_unit(
             result.open_questions = questions + _questions_from_findings(
                 unit, [i for i in issues if i.severity is Severity.CLARIFICATION]
             )
-            result.issues = [i for i in issues if i.severity is not Severity.ERROR]
+            result.issues = [
+                *context_issues_of(result),
+                *[i for i in issues if i.severity is not Severity.ERROR],
+            ]
             _log(
                 log,
                 f"  {unit.unit_id}: {len(accepted)} draft(s) accepted"
@@ -402,7 +475,7 @@ def _process_unit(
         repairs_used = attempt_no - 1
         if repairs_used >= settings.max_repair_attempts:
             result.status = UnitStatus.REJECTED
-            result.issues = issues
+            result.issues = [*context_issues_of(result), *issues]
             _log(
                 log,
                 f"  {unit.unit_id}: rejected after {repairs_used} repair attempt(s) - "
@@ -421,6 +494,7 @@ def _process_unit(
             blocking,
             max_cases=settings.max_cases_per_unit,
             domain_guidance=settings.domain_guidance,
+            context=selection.items,
         )
 
 

@@ -53,6 +53,11 @@ generation:
   max_cases_per_unit: 5      # resource ceiling, not a quota
   max_repair_attempts: 2     # bounded repair, then visible rejection
   input_char_budget: 12000   # oversized input is split visibly, never truncated
+  # Requirements that the one under test cites are sent as supporting context.
+  # They are background only and never become test targets of their own.
+  use_reference_context: true
+  context_char_budget: 6000  # omitted references are reported, never shortened
+  max_context_items: 5
   job_timeout_s: 900         # bounded runtime per job
   # Legacy flat path only (core.generate_test_cases, for existing scripts).
   # The window no longer offers these; they do not affect a normal run.

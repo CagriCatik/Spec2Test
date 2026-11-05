@@ -93,6 +93,10 @@ class SourceDocument:
     text: str
     page_count: int = 1
     empty_pages: tuple[int, ...] = ()
+    #: the identifier the document declares for itself, if it does
+    declared_id: str | None = None
+    #: the version the document declares for itself, if it does
+    version: str | None = None
 
     def slice(self, char_start: int, char_end: int) -> str:
         return self.text[char_start:char_end]
@@ -300,6 +304,39 @@ class TestCase:
 
 # ----------------------------------------------------------------- runs -----
 @dataclass(frozen=True)
+class ContextItem:
+    """One supporting requirement, with everything needed to trace it back."""
+
+    requirement_id: str
+    external_id: str | None
+    text: str
+    document_id: str
+    spans: tuple[SourceSpan, ...] = ()
+    cited_by: tuple[str, ...] = ()
+    document_filename: str | None = None
+    declared_document_id: str | None = None
+    document_version: str | None = None
+    content_hash: str | None = None
+
+    @property
+    def label(self) -> str:
+        parts = [self.external_id or self.requirement_id]
+        if self.document_filename:
+            parts.append(self.document_filename)
+        if self.declared_document_id:
+            parts.append(self.declared_document_id)
+        if self.document_version:
+            parts.append(f"version {self.document_version}")
+        if self.content_hash:
+            parts.append(f"hash {self.content_hash[:12]}")
+        return ", ".join(parts)
+
+    @property
+    def size(self) -> int:
+        return len(self.text)
+
+
+@dataclass(frozen=True)
 class GenerationAttempt:
     """One model call, kept verbatim for traceability."""
 
@@ -326,6 +363,9 @@ class GenerationUnitResult:
     open_questions: list[OpenQuestion] = field(default_factory=list)
     attempts: list[GenerationAttempt] = field(default_factory=list)
     issues: list[ValidationIssue] = field(default_factory=list)
+    #: the supporting context exactly as it was sent, stored verbatim so the
+    #: run stays explainable after the documents change
+    context: tuple[ContextItem, ...] = ()
     #: set when the failure makes every further unit pointless (credentials,
     #: configuration); the run stops instead of repeating the same error
     fatal_error: str | None = None
@@ -363,6 +403,11 @@ class GenerationRun:
     @property
     def open_questions(self) -> list[OpenQuestion]:
         return [q for unit in self.units for q in unit.open_questions]
+
+    @property
+    def context_items(self) -> list[ContextItem]:
+        """Every context item that was sent during this run."""
+        return [item for unit in self.units for item in unit.context]
 
     @property
     def rejected_units(self) -> list[GenerationUnitResult]:
@@ -421,6 +466,7 @@ class GenerationRun:
             f"accepted={len(self.accepted_units)} rejected={len(self.rejected_units)} "
             f"not started={len(self.not_started_units)}",
             f"  test case drafts={len(self.test_cases)} open questions={len(self.open_questions)}",
+            f"  supporting context items sent={len(self.context_items)}",
         ]
         for unit in self.rejected_units:
             refs = ", ".join(span.label() for span in unit.source_spans) or "no span"

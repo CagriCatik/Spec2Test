@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  677 bestanden, 4 übersprungen (mit scikit-learn)
+pytest -q  →  710 bestanden, 4 übersprungen (mit scikit-learn)
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -686,6 +686,79 @@ Schließen und beim Öffnen eines anderen Projekts mit Speichern / Verwerfen /
 Abbrechen nach. Abbrechen hält das Fenster offen.
 
 Teststand: **677 bestanden, 4 übersprungen**.
+
+## 17 Aufgelöste Verweise als belegter Zusatzkontext
+
+Umgesetzt nach den Vorgaben des Auftrags; die Regressionstests wurden wie
+verlangt vor der Implementierung festgelegt.
+
+**Auswahl.** Nur direkt zitierte Anforderungen, keine rekursive Erweiterung.
+Selbstverweise und Anforderungen derselben Einheit werden übersprungen, Zyklen
+enden nach einem Schritt.
+
+**Herkunft.** Jeder Kontexteintrag trägt Requirement-ID, externe ID, Dokument,
+dessen deklarierte ID und Version, Inhalts-Hash und Quellstelle. Der
+Textimporter liest `**Document ID:**` und `**Version:**` aus; alle 22
+Dokumente des Bestands deklarieren beides.
+
+**Rollen.** Der Prompt trennt „REQUIREMENTS UNDER TEST" von „SUPPORTING
+CONTEXT (background, not a test target)". Eine neunte Systemregel verbietet
+Testfälle für Kontextanforderungen und das Übernehmen ihrer Werte, sofern die
+Zielanforderung sie nicht verlangt. Promptversion `l1-test-draft-3`.
+
+**Nachvollziehbarkeit.** Der gesendete Kontext liegt als unveränderlicher
+Snapshot in `GenerationUnitResult.context` und überlebt das Speichern und
+Wiederöffnen eines Projekts. `ContextItem` liegt dafür in der Domäne, damit die
+Ablage sie typisiert wiederherstellen kann.
+
+**Budget.** `context_char_budget` und `max_context_items`. Was nicht passt,
+wird als `C_CONTEXT_OMITTED` gemeldet und ganz weggelassen statt gekürzt.
+
+**Widersprüche.** Abweichende Werte erzeugen `C_CONTRADICTORY_SOURCES`; das
+Modell darf keine Quelle bevorzugen.
+
+**Validierung mit Herkunft.** Ein Wert, der nur im Zusatzkontext steht, gilt
+nicht als belegt. Er wird als `C_VALUE_FROM_CONTEXT` mit der nennenden Quelle
+gemeldet, blockiert weiter die Freigabe und bleibt damit Gegenstand des
+Testerreviews.
+
+### Zwei Befunde aus dem Abnahmevergleich
+
+Der erste Vergleich ergab **mehr** unbelegte Werte mit Kontext (20 → 33). Die
+Ursache war ein Messfehler auf diesem Bestand: die Dokumente schreiben Werte
+als LaTeX (`$50\text{ ms} \pm 2\text{ ms}$`), und die Belegprüfung las daraus
+nur einen Phantomwert. Jede korrekt zitierte Zahl galt damit als unbelegt.
+`normalise_math()` übersetzt die Notation jetzt vor dem Auslesen; die
+Einheitenliste wurde um °C, K, Ohm-Varianten, Ah/Wh und weitere ergänzt. Ohne
+diese Korrektur wäre die Prüfung auf echten Dokumenten unbrauchbar gewesen.
+
+Die Widerspruchsprüfung meldete **zehn Fehlalarme** aus einem einzigen
+Kontextpaar, etwa „2, 50, 200 ms gegen 0,5 ms" – das sind verschiedene Größen
+(Abtastperiode gegen Erkennungszeit), kein Widerspruch. Sie meldet jetzt nur
+noch, wenn beide Seiten für dieselbe Einheit **genau einen** Wert nennen. Das
+Zuordnen von Größen über ihren Namen braucht die Retrieval-Stufe.
+
+### Abnahmevergleich
+
+Zwei Anforderungen mit aufgelösten Verweisen, je zwei Läufe gegen
+`gpt-oss:120b` über den lokalen Daemon:
+
+| Kennzahl | ohne Kontext | mit Kontext |
+| - | - | - |
+| Entwürfe | 4,0 | 4,0 |
+| offene Fragen | 26,5 | 21,5 |
+| unbelegte Werte | 15,5 | 11,0 |
+| Erwartung ohne Messkriterium | 10,5 | 9,5 |
+| Reparaturen | 1,0 | 1,0 |
+
+Die Richtung stimmt, **die Aussagekraft ist aber gering**: zwei Anforderungen,
+zwei Läufe je Variante, und die Streuung ist groß (unbelegte Werte mit Kontext:
+16 und 6). Kein Wert wurde dem Kontext zugeordnet (`C_VALUE_FROM_CONTEXT` = 0),
+das Modell übernahm also keine Kontextwerte. Für eine belastbare Aussage
+braucht es mehr Anforderungen und mehr Wiederholungen; beide Läufe sind samt
+Kontext gespeichert.
+
+Teststand: **710 bestanden, 4 übersprungen**.
 
 ## 9 Commits
 

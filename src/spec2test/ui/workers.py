@@ -134,6 +134,7 @@ class DraftTask(QRunnable):
         if imported is None:
             return
         requirements, documents = imported
+        by_id = {document.document_id: document for document in documents}
         self.signals.documents.emit(documents)
         self.signals.requirements.emit(requirements)
 
@@ -168,6 +169,8 @@ class DraftTask(QRunnable):
                 progress=on_progress,
                 log=self.signals.message.emit,
                 should_cancel=lambda: self._cancelled,
+                documents=by_id,
+                catalogue=requirements,
             )
         except ModelError as exc:
             self.signals.error.emit(f"{type(exc).__name__}: {exc}")

@@ -314,3 +314,47 @@ def test_rejected_units_stay_in_the_report_with_their_source_reference():
     assert "REJECTED U1" in report
     assert "doc-1" in report and "page 1" in report
     assert "E_INVALID_JSON" in report
+
+
+# ------------------------------------------- values written as LaTeX ---------
+@pytest.mark.parametrize(
+    "written,expected",
+    [
+        (r"$50\text{ ms}$", (50.0, "ms")),
+        (r"$50\,\text{ms}$", (50.0, "ms")),
+        (r"$\pm 1.0^\circ\text{C}$", (1.0, "degc")),
+        (r"$100\,\mu\Omega$", (100.0, "µohm")),
+        (r"$2.5\text{ A}$", (2.5, "a")),
+        ("plain 50 ms", (50.0, "ms")),
+    ],
+)
+def test_values_are_read_whatever_notation_the_document_uses(written, expected):
+    from spec2test.domain.validation import _numeric_claims
+
+    assert expected in _numeric_claims(f"the limit is {written} exactly")
+
+
+def test_a_correctly_quoted_latex_value_is_not_reported_as_unsupported():
+    """Otherwise a real specification floods the reviewer with false findings."""
+    text = r"SYS-REQ-1: the reaction shall take $50\text{ ms} \pm 2\text{ ms}$."
+    requirement = Requirement(
+        "REQ-1", text, (SourceSpan("doc", 0, len(text), text, page=1),), "SYS-REQ-1"
+    )
+    drafted = case(
+        requirement_ids=("REQ-1",),
+        steps=(TestStep(1, "trigger", ("the reaction takes 50 ms",)),),
+    )
+    report = validate_test_case(drafted, [requirement])
+    assert "C_UNSUPPORTED_VALUE" not in report.codes()
+
+
+def test_an_invented_value_is_still_reported_next_to_latex():
+    text = r"SYS-REQ-1: the reaction shall take $50\text{ ms}$."
+    requirement = Requirement(
+        "REQ-1", text, (SourceSpan("doc", 0, len(text), text, page=1),), "SYS-REQ-1"
+    )
+    drafted = case(
+        requirement_ids=("REQ-1",),
+        steps=(TestStep(1, "trigger", ("the reaction takes 10 ms",)),),
+    )
+    assert "C_UNSUPPORTED_VALUE" in validate_test_case(drafted, [requirement]).codes()

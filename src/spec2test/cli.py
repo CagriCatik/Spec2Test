@@ -17,7 +17,7 @@ from .adapters.ollama.client import API_KEY_ENV, MODE_CLOUD, MODE_LOCAL, OllamaE
 from .adapters.ollama.models import capabilities_for, check_model_choice, list_models
 from .adapters.persistence import JsonRunStore
 from .application.generate import ProgressUpdate, generate_drafts
-from .application.ingest import content_hash, import_documents
+from .application.ingest import content_hash, import_documents, reference_report
 from .bootstrap import (
     ALL_MODES,
     MODE_FAKE,
@@ -59,6 +59,17 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model", default=None)
     run.add_argument("--host", default=None, help="override the API host")
     run.add_argument("--max-cases", type=int, default=None)
+    run.add_argument(
+        "--context",
+        dest="context",
+        action="store_true",
+        default=None,
+        help="send requirements cited by the ones under test (default: on)",
+    )
+    run.add_argument(
+        "--no-context", dest="context", action="store_false",
+        help="generate without supporting context, for a comparison",
+    )
     run.add_argument("--max-repairs", type=int, default=None)
     run.add_argument("--group-size", type=int, default=None)
     run.add_argument("--job-timeout", type=float, default=None)
@@ -124,6 +135,8 @@ def _cmd_run(args) -> int:
         gen_settings.group_size = args.group_size
     if args.job_timeout is not None:
         gen_settings.job_timeout_s = args.job_timeout
+    if args.context is not None:
+        gen_settings.use_reference_context = args.context
 
     ollama_settings = None
     if args.mode in (MODE_CLOUD, MODE_LOCAL):
@@ -153,8 +166,10 @@ def _cmd_run(args) -> int:
         return 1
 
     requirements = []
+    documents = {}
     for result in results:
         doc = result.document
+        documents[doc.document_id] = doc
         _out(
             f"{doc.filename}: format={doc.format.value} pages={doc.page_count} "
             f"hash={doc.content_hash[:12]} requirements={len(result.requirements)}"
@@ -186,6 +201,13 @@ def _cmd_run(args) -> int:
         )
 
     source = content_hash("\n".join(r.text for r in requirements))
+    if gen_settings.use_reference_context:
+        report = reference_report(requirements)
+        cited = sum(len(v) for v in report.citations.values())
+        _out(
+            f"reference context: {cited} citation(s), "
+            f"{len(report.unresolved)} without a target"
+        )
     try:
         run = generate_drafts(
             requirements,
@@ -194,6 +216,8 @@ def _cmd_run(args) -> int:
             source_hash=source,
             progress=progress,
             log=_out,
+            documents=documents,
+            catalogue=requirements,
         )
     except OllamaError as exc:
         _out(f"generation aborted: {exc}")
@@ -223,6 +247,13 @@ def _cmd_run(args) -> int:
         _out("== open questions ==")
         for question in questions:
             _out(f"{question.question_id} ({question.origin.value}): {question.question}")
+
+    if run.context_items:
+        _out()
+        _out("== supporting context sent ==")
+        for item in run.context_items:
+            _out(f"{item.external_id or item.requirement_id}  [{item.label}]")
+            _out(f"  cited by: {', '.join(item.cited_by)}")
 
     _out()
     _out("== report ==")

@@ -274,6 +274,29 @@ no target, and which IDs are defined more than once. An ambiguous ID does not
 resolve. This is the deterministic first stage of retrieval - no search
 involved.
 
+## Supporting context
+
+`application/context.py` turns resolved references into context for one
+generation unit: only the requirements the unit cites directly, no recursion.
+Each item carries requirement ID, document, declared document ID and version,
+content hash and source span, and the selection is stored verbatim in
+`GenerationUnitResult.context` - IDs alone would not survive a later change to
+the documents.
+
+The prompt keeps the roles apart: requirements under test versus supporting
+context that must not become a test target. What does not fit the budget is
+reported, never shortened. Values that differ between a requirement and its
+context are reported as a clarification; the model must not pick a source.
+
+A value found only in the context is not treated as covered. It is reported as
+`C_VALUE_FROM_CONTEXT` naming the source, so the reviewer decides whether the
+attribution holds.
+
+Specifications written in Markdown often state values as LaTeX
+(`$50\text{ ms}$`). `domain.validation.normalise_math` translates that before
+values are read; without it every correctly quoted value would be reported as
+unsupported.
+
 ## Review workflow
 
 A `Project` holds the original documents, the captured requirements, the

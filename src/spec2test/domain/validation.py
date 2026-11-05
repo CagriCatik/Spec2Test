@@ -37,7 +37,39 @@ BLOCKING_CODES = frozenset(
     }
 )
 
-_UNIT = r"(?:deg/s|km/h|m/s2|m/s|deg|°|ms|µs|us|s|%|mV|V|mA|A|Nm|kHz|Hz|bar|rpm|mm|cm|m|kPa|Ohm)"
+_UNIT = (
+    r"(?:deg/s|km/h|m/s2|m/s|degC|°C|K|deg|°|ms|µs|us|s|min|h|%|ppm|"
+    r"kV|mV|µV|V|mA|µA|A|mAh|Ah|kWh|Wh|kW|W|Nm|MHz|kHz|Hz|bar|kPa|Pa|rpm|"
+    r"mOhm|µOhm|kOhm|Ohm|mm|cm|m|g|kg|bit/s|kbit/s|Mbit/s)"
+)
+
+# Specifications written in Markdown often carry LaTeX: "$50\\text{ ms}$".
+# Without normalising it, a correctly quoted value would be reported as
+# unsupported, which floods a reviewer with false findings.
+_MATH_REPLACEMENTS = (
+    (re.compile(r"\\(?:text|mathrm|mathit|si|unit)\s*\{([^{}]*)\}"), r" \1 "),
+    (re.compile(r"\\(?:,|;|:|!|quad|qquad)"), " "),
+    (re.compile(r"\\ "), " "),
+    (re.compile(r"\\pm"), " ± "),
+    (re.compile(r"\\times"), " x "),
+    (re.compile(r"\\(?:le|leq)\b"), " <= "),
+    (re.compile(r"\\(?:ge|geq)\b"), " >= "),
+    (re.compile(r"\\(?:mu|upmu)\b"), "µ"),
+    (re.compile(r"\\Omega\b"), "Ohm"),
+    (re.compile(r"\^\s*\\circ\s*"), "°"),
+    (re.compile(r"\\circ\b"), "°"),
+    (re.compile(r"[\$\\{}]"), " "),
+)
+
+
+def normalise_math(text: str) -> str:
+    """Turn LaTeX-style notation into plain text so values can be read.
+
+    ``$50\\text{ ms} \\pm 2\\text{ ms}$`` becomes ``50 ms ± 2 ms``.
+    """
+    for pattern, replacement in _MATH_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    return re.sub(r"[ \t]{2,}", " ", text)
 _NUMBER_WITH_UNIT = re.compile(
     rf"(?P<value>[-+]?\d+(?:[.,]\d+)?)\s*(?P<unit>{_UNIT})\b", re.IGNORECASE
 )
@@ -46,7 +78,13 @@ _MEASURABLE_HINT = re.compile(
     rf"(\d+(?:[.,]\d+)?\s*{_UNIT}\b)|(\b[PBCU][0-9A-F]{{4}}\b)", re.IGNORECASE
 )
 
-_UNIT_ALIASES = {"°": "deg", "us": "µs"}
+_UNIT_ALIASES = {
+    "°": "deg",
+    "us": "µs",
+    "°c": "degc",
+    "µohm": "µohm",
+    "uohm": "µohm",
+}
 
 
 # ----------------------------------------------------------------- report ---
@@ -92,7 +130,7 @@ def _numeric_claims(text: str) -> set[tuple[float, str]]:
     """Numbers that carry a unit. Bare numbers are ignored on purpose:
     they are too noisy to attribute to a specification value."""
     out: set[tuple[float, str]] = set()
-    for match in _NUMBER_WITH_UNIT.finditer(text):
+    for match in _NUMBER_WITH_UNIT.finditer(normalise_math(text)):
         raw = match.group("value").replace(",", ".").lstrip("+")
         try:
             out.add((float(raw), _normalise_unit(match.group("unit"))))
@@ -202,8 +240,15 @@ def _validate_step_sequence(
 def validate_test_case(
     case: TestCase,
     requirements: Sequence[Requirement] | Mapping[str, Requirement],
+    *,
+    context: Sequence = (),
 ) -> ValidationReport:
-    """Validate one test case against the requirements that were offered."""
+    """Validate one test case against the requirements that were offered.
+
+    ``context`` are the supporting requirements that were sent along. A value
+    found only there is not treated as covered: it is reported with the source
+    that states it, so the reviewer decides whether the attribution holds.
+    """
     report = ValidationReport()
     lookup = (
         dict(requirements)
@@ -285,7 +330,7 @@ def validate_test_case(
         )
 
     # --- unsupported detail ------------------------------------------------
-    report.extend(_unsupported_details(case, resolved, path))
+    report.extend(_unsupported_details(case, resolved, path, context))
 
     if case.legacy_payload:
         report.add(
@@ -299,7 +344,10 @@ def validate_test_case(
 
 
 def _unsupported_details(
-    case: TestCase, resolved: Sequence[Requirement], path: str
+    case: TestCase,
+    resolved: Sequence[Requirement],
+    path: str,
+    context: Sequence = (),
 ) -> list[ValidationIssue]:
     """Numbers, limits and DTCs the model added without cover in the source."""
     if not resolved:
@@ -320,20 +368,34 @@ def _unsupported_details(
 
     for where, text in texts:
         for value, unit in _numeric_claims(text):
-            if not any(
+            if any(
                 abs(value - allowed) < 1e-9 and unit == allowed_unit
                 for allowed, allowed_unit in allowed_numbers
             ):
+                continue
+            source = _context_source(value, unit, context)
+            if source is not None:
                 issues.append(
                     ValidationIssue(
-                        "C_UNSUPPORTED_VALUE",
+                        "C_VALUE_FROM_CONTEXT",
                         Severity.CLARIFICATION,
                         where,
-                        f"{value:g} {unit} is not covered by the referenced "
-                        "requirements; record it as an open question or an "
-                        "explicitly marked proposal instead of a specification",
+                        f"{value:g} {unit} does not appear in the referenced "
+                        f"requirement(s) but in {source}. Confirm that this "
+                        "value belongs to this expectation.",
                     )
                 )
+                continue
+            issues.append(
+                ValidationIssue(
+                    "C_UNSUPPORTED_VALUE",
+                    Severity.CLARIFICATION,
+                    where,
+                    f"{value:g} {unit} is not covered by the referenced "
+                    "requirements; record it as an open question or an "
+                    "explicitly marked proposal instead of a specification",
+                )
+            )
         for dtc in _dtc_claims(text):
             if dtc not in allowed_dtcs:
                 issues.append(
@@ -348,18 +410,36 @@ def _unsupported_details(
 
 
 # ----------------------------------------------------------------- gating ---
+def _context_source(value: float, unit: str, context: Sequence) -> str | None:
+    """Which supporting requirement states this quantity, if exactly one does."""
+    matches = [
+        item
+        for item in context
+        if any(
+            abs(value - other) < 1e-9 and unit == other_unit
+            for other, other_unit in _numeric_claims(getattr(item, "text", ""))
+        )
+    ]
+    if len(matches) != 1:
+        return None
+    item = matches[0]
+    label = getattr(item, "label", None)
+    return label or getattr(item, "external_id", None) or "the supporting context"
+
+
 def may_approve(
     case: TestCase,
     requirements: Sequence[Requirement] | Mapping[str, Requirement],
     *,
     open_questions: Sequence[OpenQuestion] = (),
+    context: Sequence = (),
 ) -> tuple[bool, ValidationReport]:
     """Approval gate. Unresolved criteria block approval.
 
     A question that a reviewer has answered no longer blocks: it stays on
     record with its answer, but it is cleared.
     """
-    report = validate_test_case(case, requirements)
+    report = validate_test_case(case, requirements, context=context)
     accepted = case.accepted_keys
     if accepted:
         # an accepted clarification no longer blocks; it stays in the record
