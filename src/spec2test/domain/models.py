@@ -68,6 +68,19 @@ class QuestionOrigin(str, Enum):
     REVIEWER = "reviewer"
 
 
+class ReviewAction(str, Enum):
+    """What a reviewer did. Every entry is kept for traceability."""
+
+    CREATED = "created"
+    EDITED = "edited"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CLARIFICATION_REQUESTED = "clarification_requested"
+    REOPENED = "reopened"
+    SOURCE_CHANGED = "source_changed"
+    QUESTION_RESOLVED = "question_resolved"
+
+
 # ------------------------------------------------------------- documents ---
 @dataclass(frozen=True)
 class SourceDocument:
@@ -197,6 +210,10 @@ class TestCase:
     revision: int = 1
     source_spans: tuple[SourceSpan, ...] = ()
     legacy_payload: dict | None = None
+    #: set when the requirements behind this draft changed after it was written
+    needs_recheck: bool = False
+    #: free-text note of the last review decision
+    review_note: str | None = None
 
     def with_status(self, status: ReviewStatus) -> "TestCase":
         return replace(self, review_status=status)
@@ -365,6 +382,84 @@ class GenerationRun:
         for err in self.errors:
             lines.append(f"  ERROR {err}")
         return lines
+
+
+@dataclass(frozen=True)
+class ReviewEvent:
+    """One entry of the review history. Never removed, only appended."""
+
+    action: ReviewAction
+    case_id: str
+    revision: int
+    at: str
+    note: str | None = None
+    status_before: ReviewStatus | None = None
+    status_after: ReviewStatus | None = None
+
+
+@dataclass
+class Project:
+    """Everything a reviewer needs to continue work later.
+
+    Holds the original documents, the captured requirements, the current test
+    drafts, every earlier revision of them, the runs that produced them and the
+    review history.
+    """
+
+    project_id: str
+    name: str
+    created_at: str
+    documents: list[SourceDocument] = field(default_factory=list)
+    requirements: list[Requirement] = field(default_factory=list)
+    test_cases: list[TestCase] = field(default_factory=list)
+    #: previous revisions, newest last, keyed by case id
+    revisions: dict[str, list[TestCase]] = field(default_factory=dict)
+    runs: list[GenerationRun] = field(default_factory=list)
+    history: list[ReviewEvent] = field(default_factory=list)
+    open_questions: list[OpenQuestion] = field(default_factory=list)
+
+    # ------------------------------------------------------------- lookup
+    def case(self, case_id: str) -> TestCase | None:
+        return next((c for c in self.test_cases if c.case_id == case_id), None)
+
+    def requirement(self, requirement_id: str) -> Requirement | None:
+        return next(
+            (r for r in self.requirements if r.requirement_id == requirement_id), None
+        )
+
+    def document(self, document_id: str) -> SourceDocument | None:
+        return next((d for d in self.documents if d.document_id == document_id), None)
+
+    def cases_for(self, requirement_id: str) -> list[TestCase]:
+        return [c for c in self.test_cases if requirement_id in c.requirement_ids]
+
+    def history_of(self, case_id: str) -> list[ReviewEvent]:
+        return [event for event in self.history if event.case_id == case_id]
+
+    # ------------------------------------------------------------ counting
+    def count_by_status(self) -> dict[str, int]:
+        counts = {status.value: 0 for status in ReviewStatus}
+        for case in self.test_cases:
+            counts[case.review_status.value] += 1
+        return counts
+
+    @property
+    def approved_cases(self) -> list[TestCase]:
+        return [c for c in self.test_cases if c.review_status is ReviewStatus.APPROVED]
+
+    @property
+    def cases_needing_recheck(self) -> list[TestCase]:
+        return [c for c in self.test_cases if c.needs_recheck]
+
+    def replace_case(self, case: TestCase) -> None:
+        """Replace a case in place, keeping the previous one as a revision."""
+        for index, existing in enumerate(self.test_cases):
+            if existing.case_id == case.case_id:
+                if existing.revision != case.revision:
+                    self.revisions.setdefault(case.case_id, []).append(existing)
+                self.test_cases[index] = case
+                return
+        self.test_cases.append(case)
 
 
 def spans_of(requirements: Sequence[Requirement]) -> tuple[SourceSpan, ...]:
