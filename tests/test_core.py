@@ -31,6 +31,13 @@ def test_parse_cases_returns_empty_for_invalid_json():
     assert parse_cases(json.dumps({"foo": "bar"})) == []
 
 
+def test_parse_cases_reports_why_an_answer_was_unusable():
+    """AP 1: the three unusable outcomes are distinguishable."""
+    assert core.parse_legacy_cases("").outcome.name == "EMPTY"
+    assert core.parse_legacy_cases("not-json").outcome.name == "INVALID_JSON"
+    assert core.parse_legacy_cases("[]").outcome.name == "NO_TEST_CASES"
+
+
 def test_chunk_document_with_overlap():
     pages = [f"page-{i}" for i in range(5)]
     chunks = chunk_document(pages, combine=2, overlap=1)
@@ -51,8 +58,10 @@ def test_keyword_retriever_returns_related_segments():
 
 
 def test_generate_test_cases_reports_progress(monkeypatch):
+    # AP 1/AP 2: block building moved into application.chunking.build_blocks, so
+    # patching core.chunk_document no longer influences the run. With three
+    # pages and combine=1 there are three blocks and therefore three calls.
     monkeypatch.setattr(core, "pdf_to_text_pages", lambda _path: ["a", "b", "c"])
-    monkeypatch.setattr(core, "chunk_document", lambda pages, combine, overlap=0: ["chunk-1", "chunk-2"])
 
     class DummyAgent:
         def __init__(self):
@@ -88,8 +97,8 @@ def test_generate_test_cases_reports_progress(monkeypatch):
 
     assert updates  # at least one update emitted
     assert updates[-1] == 100
-    assert len(cases) == 2
-    assert agent.calls == 2
+    assert len(cases) == 3
+    assert agent.calls == 3
 
 
 def test_agentlocal_gpu_switches_between_cpu_and_auto():
@@ -108,7 +117,6 @@ def test_agentlocal_gpu_switches_between_cpu_and_auto():
 
 def test_prompt_cache_short_circuits_generation(monkeypatch, tmp_path):
     monkeypatch.setattr(core, "pdf_to_text_pages", lambda _path: ["a", "b"])
-    monkeypatch.setattr(core, "chunk_document", lambda pages, combine, overlap=0: ["chunk-1", "chunk-2"])
 
     class DummyAgent:
         def __init__(self):

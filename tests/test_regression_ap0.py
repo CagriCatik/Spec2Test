@@ -129,19 +129,44 @@ def test_wrong_field_types_are_reported_not_coerced():
 # Defect 3: a network error silently starts the local Ollama CLI
 # --------------------------------------------------------------------------
 def test_http_failure_does_not_silently_invoke_the_local_cli(monkeypatch):
-    called = {"cli": False}
+    """A transport error must surface, not start ``ollama run``."""
+    called = {"cli": False, "subprocess": False}
 
     def fake_cli(self, prompt):  # pragma: no cover - must never run
         called["cli"] = True
         return "[]"
 
-    def boom(*_args, **_kwargs):
-        raise OSError("connection refused")
+    class DeadSession:
+        def request(self, *_args, **_kwargs):
+            raise core.requests.exceptions.ConnectionError("connection refused")
+
+    def no_subprocess(*_args, **_kwargs):  # pragma: no cover - must never run
+        called["subprocess"] = True
+        raise AssertionError("the local CLI must not be started")
+
+    import subprocess
 
     monkeypatch.setattr(core.AgentLocal, "_cli_generate", fake_cli, raising=False)
-    monkeypatch.setattr(core.requests, "post", boom)
+    monkeypatch.setattr(subprocess, "check_output", no_subprocess)
+    monkeypatch.setattr(subprocess, "run", no_subprocess)
 
-    agent = core.AgentLocal(model="dummy", ollama_url="http://localhost:11434")
-    with pytest.raises(Exception):
+    agent = core.AgentLocal(
+        model="dummy", ollama_url="http://localhost:11434", mode="ollama_local"
+    )
+    # No retry sleeping in the test: the adapter is driven with a dead session.
+    agent.client._session = DeadSession()
+    agent.client._sleep = lambda _seconds: None
+
+    with pytest.raises(core.OllamaError) as excinfo:
         agent.generate("hello")
+
+    assert "connection refused" in str(excinfo.value)
     assert called["cli"] is False, "network error triggered the local CLI fallback"
+    assert called["subprocess"] is False
+    assert not hasattr(core.AgentLocal, "_cli_generate_original")
+
+
+def test_core_no_longer_shells_out_to_the_ollama_cli():
+    source = (Path(__file__).resolve().parents[1] / "core.py").read_text("utf-8")
+    assert "subprocess" not in source
+    assert "_cli_generate" not in source

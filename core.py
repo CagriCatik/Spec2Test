@@ -1,4 +1,14 @@
-"""Core utilities for the PDF → LLM → test-specification workflow."""
+"""Compatibility layer for the existing entry points.
+
+The implementation now lives in ``src/spec2test``:
+    application.chunking   - block building without page loss
+    application.legacy     - the deprecated flat-shape bridge for the GUI
+    application.contracts  - the strict, versioned model contract
+    adapters.ollama        - HTTP transport for cloud and local mode
+
+This module keeps the names the GUI, the workers and the existing tests use.
+New code should call ``spec2test.application.generate.generate_drafts``.
+"""
 from __future__ import annotations
 
 import csv
@@ -6,7 +16,7 @@ import hashlib
 import json
 import logging
 import re
-import subprocess
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -18,10 +28,38 @@ try:  # pragma: no cover - import guard for optional progress dependency
 except Exception:  # pragma: no cover - keep working without tqdm installed
     tqdm = None  # type: ignore[assignment]
 
-import fitz
 import pandas as pd
 import requests
 from openpyxl.utils import get_column_letter
+
+_SRC = Path(__file__).resolve().parent / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+from spec2test.adapters.documents.pdf_import import extract_pages
+from spec2test.adapters.ollama.client import (  # noqa: E402
+    MODE_CLOUD,
+    MODE_LOCAL,
+    OllamaChatClient,
+    OllamaError,
+    OllamaSettings,
+)
+from spec2test.application.chunking import build_blocks  # noqa: E402
+from spec2test.application.contracts import (  # noqa: E402
+    ParseOutcome,
+    parse_model_response,
+)
+from spec2test.application.contracts import strip_code_fences as _strip_code_fences
+from spec2test.application.legacy import (  # noqa: E402
+    LEGACY_KEYS,
+    LEGACY_REQUIRED,
+    LEGACY_PROMPT_VERSION,
+    LEGACY_SCHEMA_VERSION,
+    generate_legacy_cases,
+    parse_legacy_cases,
+)
+from spec2test.application.ports import ChatMessage  # noqa: E402
+from spec2test.domain.models import RunStatus  # noqa: E402
 
 from config_models import (
     DEFAULT_GPU_LAYERS,
@@ -49,24 +87,18 @@ DEFAULTS = dict(
     top_p=DEFAULT_TOP_P,
     top_k=DEFAULT_TOP_K,
     max_tokens=DEFAULT_MAX_TOKENS,
-    http_timeout=None,  # disable hard timeout; let stream decide
+    connect_timeout=10.0,
+    read_timeout=300.0,
     use_gpu=DEFAULT_USE_GPU,
     num_gpu=DEFAULT_NUM_GPU,
     main_gpu=DEFAULT_MAIN_GPU,
     gpu_layers=DEFAULT_GPU_LAYERS,
     num_thread=DEFAULT_NUM_THREAD,
+    mode=MODE_LOCAL,
 )
 
-ALLOWED_KEYS = [
-    "testcase_name",
-    "objective",
-    "linked_requirements",
-    "preconditions",
-    "actions",
-    "expected_results",
-    "postconditions",
-]
-REQUIRED = {"objective", "actions", "expected_results", "postconditions"}
+ALLOWED_KEYS = list(LEGACY_KEYS)
+REQUIRED = set(LEGACY_REQUIRED)
 
 __all__ = [
     "AgentLocal",
@@ -75,22 +107,30 @@ __all__ = [
     "save_xlsx",
     "DEFAULTS",
     "parse_cases",
+    "parse_legacy_cases",
+    "parse_model_response",
     "strip_code_fences",
     "chunk_document",
+    "build_blocks",
     "KeywordRetriever",
     "load_prompt_file",
     "PromptCache",
     "summarise_cases",
+    "RunStatus",
 ]
 
 
 # ------------------------------ agent ---------------------------------------
 class AgentLocal:
-    """HTTP-first, CLI-fallback wrapper around a local Ollama REST API."""
+    """Thin wrapper over the Ollama chat adapter.
+
+    Behaviour change versus the baseline: there is no CLI fallback. A transport
+    error is raised so the caller can show it instead of silently starting a
+    local ``ollama run``.
+    """
 
     def __init__(self, **kwargs):
         cfg = {**DEFAULTS, **{k: v for k, v in kwargs.items() if v is not None}}
-        # Backwards compatibility for alternative key names
         model = kwargs.get("model") or kwargs.get("model_name")
         if model:
             cfg["model"] = model
@@ -100,12 +140,14 @@ class AgentLocal:
 
         self.model = cfg["model"]
         self.url = cfg["ollama_url"].rstrip("/")
+        self.mode = cfg["mode"]
         self.use_gpu = bool(cfg["use_gpu"])
 
         num_gpu = cfg["num_gpu"]
         if num_gpu is None:
             num_gpu = -1 if self.use_gpu else 0
 
+        # Kept for the GUI/tests; the adapter receives these only in local mode.
         self.opt = {
             "temperature": cfg["temperature"],
             "top_p": cfg["top_p"],
@@ -119,99 +161,89 @@ class AgentLocal:
             self.opt["gpu_layers"] = cfg["gpu_layers"]
         if cfg["num_thread"] is not None:
             self.opt["num_thread"] = cfg["num_thread"]
-        self.http_timeout = cfg["http_timeout"]
+
         self.system_prompt = kwargs.get("system_prompt") or PROMPT_ROLE
-
-    # --- internals ---------------------------------------------------------
-    def _http_generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "stream": True,
-            "options": self.opt,
-        }
-        r = requests.post(
-            f"{self.url}/api/generate", json=payload, timeout=self.http_timeout
+        self.settings = OllamaSettings(
+            model=self.model,
+            mode=self.mode,
+            host=self.url,
+            connect_timeout_s=float(cfg["connect_timeout"]),
+            read_timeout_s=float(cfg["read_timeout"]),
+            temperature=cfg["temperature"],
+            top_p=cfg["top_p"],
+            top_k=cfg["top_k"],
+            max_tokens=cfg["max_tokens"],
+            num_gpu=None if self.mode == MODE_CLOUD else num_gpu,
+            main_gpu=cfg["main_gpu"],
+            gpu_layers=cfg["gpu_layers"],
+            num_thread=cfg["num_thread"],
         )
-        r.raise_for_status()
-
-        chunks: list[str] = []
-        for line in r.iter_lines():
-            if not line:
-                continue
-            part = json.loads(line)
-            if txt := part.get("response") or part.get("content"):
-                chunks.append(txt)
-        return "".join(chunks).strip()
-
-    def _cli_generate(self, prompt: str) -> str:
-        cmd = ["ollama", "run", self.model]
-        return subprocess.check_output(
-            cmd, input=prompt, encoding="utf8", stderr=subprocess.STDOUT
-        ).strip()
+        self.client = OllamaChatClient(self.settings, log=logging.info)
 
     # --- utilities ---------------------------------------------------------
     def ensure_server(self, timeout: float = 2.0) -> bool:
-        """Return True when the Ollama server responds, False otherwise."""
+        """True when the configured endpoint answers and accepts the credentials."""
         try:
-            r = requests.get(f"{self.url}/api/version", timeout=timeout)
-            r.raise_for_status()
+            self.client.check_connection()
             return True
-        except Exception:
+        except OllamaError as exc:
+            logging.warning("endpoint check failed: %s", exc)
             return False
 
     def build_prompt(self, user_content: str, system_prompt: str | None = None) -> str:
+        """Kept for compatibility; the adapter sends real chat roles."""
         system = system_prompt or self.system_prompt
         return f"[SYSTEM]\n{system}\n\n[USER]\n{user_content}".strip()
 
+    def messages(
+        self, user_content: str, system_prompt: str | None = None
+    ) -> list[ChatMessage]:
+        return [
+            ChatMessage("system", system_prompt or self.system_prompt),
+            ChatMessage("user", user_content),
+        ]
+
     def generate(self, content: str, *, system_prompt: str | None = None) -> str:
-        prompt = self.build_prompt(content, system_prompt)
-        try:
-            return self._http_generate(prompt)
-        except Exception as exc:
-            logging.warning("HTTP failed (%s) – falling back to CLI", exc)
-            return self._cli_generate(prompt)
+        reply = self.client.chat(self.messages(content, system_prompt))
+        if reply.truncated:
+            logging.warning(
+                "the model stopped early (done_reason=%s); the answer is incomplete",
+                reply.done_reason,
+            )
+        return reply.text.strip()
 
 
 # ------------------------------ helpers -------------------------------------
 def strip_code_fences(text: str) -> str:
-    if text.lstrip().startswith("```") and "```" in text:
-        inner = text.split("```", 2)[1]
-        if "\n" in inner:
-            inner = inner.split("\n", 1)[1]
-        return inner.strip()
-    return text.strip()
+    return _strip_code_fences(text)
 
 
 def parse_cases(raw: str) -> List[Dict]:
-    cleaned = strip_code_fences(raw)
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        try:
-            start, end = cleaned.index("["), cleaned.rindex("]") + 1
-            data = json.loads(cleaned[start:end])
-        except Exception:
-            return []
-    if not isinstance(data, list):
-        return []
-    return [
-        {k: item.get(k, "") for k in ALLOWED_KEYS if isinstance(item, dict)}
-        for item in data
-    ]
+    """Legacy parser. Unusable elements are rejected and logged, never turned
+    into empty placeholder cases. Use :func:`parse_legacy_cases` for details."""
+    result = parse_legacy_cases(raw)
+    for issue in result.issues:
+        logging.warning("parse: %s", issue)
+    return result.cases
 
 
 def pdf_to_text_pages(pdf_path: str) -> List[str]:
-    with fitz.open(pdf_path) as doc:
-        return [p.get_text() for p in doc]
+    return extract_pages(Path(pdf_path))
 
 
-def _missing_fields(case: dict[str, str]) -> list[str]:
-    return [k for k in REQUIRED if not str(case.get(k)).strip()]
+def _missing_fields(case: dict) -> list[str]:
+    return [
+        key
+        for key in REQUIRED
+        if not (
+            any(str(v).strip() for v in case[key])
+            if isinstance(case.get(key), list)
+            else str(case.get(key) or "").strip()
+        )
+    ]
 
 
 def load_prompt_file(path: Path | str | None) -> str | None:
-    """Load an optional prompt file, returning ``None`` when unavailable."""
     if not path:
         return None
     try:
@@ -222,27 +254,12 @@ def load_prompt_file(path: Path | str | None) -> str | None:
 
 
 def chunk_document(pages: Sequence[str], combine: int, *, overlap: int = 0) -> list[str]:
-    """Combine *pages* into textual chunks with optional sliding-window overlap."""
-    if combine < 1:
-        raise ValueError("combine must be >= 1")
-    if overlap >= combine:
-        raise ValueError("overlap must be smaller than combine")
-
-    step = max(1, combine - overlap)
-    chunks: list[str] = []
-    for start in range(0, len(pages), step):
-        part = pages[start : start + combine]
-        if not part:
-            continue
-        if len(part) < combine and start != 0:
-            # Already covered by previous overlapping chunk
-            continue
-        chunks.append("\n\n".join(part))
-    return chunks
+    """Combine pages into text blocks. Every page reaches at least one block."""
+    return [block.text for block in build_blocks(pages, combine, overlap=overlap)]
 
 
 class KeywordRetriever:
-    """Very small TF–IDF retriever to support RAG without external services."""
+    """Very small TF-IDF retriever to support RAG without external services."""
 
     def __init__(self, texts: Sequence[str]):
         if not texts:
@@ -263,9 +280,7 @@ class KeywordRetriever:
             return []
         vec = self.vectorizer.transform([query])
         scores = (self.matrix @ vec.T).toarray().ravel()
-        indexed = sorted(
-            enumerate(scores), key=lambda item: item[1], reverse=True
-        )
+        indexed = sorted(enumerate(scores), key=lambda item: item[1], reverse=True)
         out: list[str] = []
         for idx, _score in indexed:
             if exclude_idx is not None and idx == exclude_idx:
@@ -283,85 +298,17 @@ def _log(msg: str, logger: Callable[[str], None] | None) -> None:
         logging.info(msg)
 
 
-class _ProgressReporter:
-    """Fan out progress updates to Qt callbacks and optional tqdm bars."""
-
-    def __init__(
-        self,
-        *,
-        total: int,
-        callback: Callable[[int], None] | None,
-        show_bar: bool,
-    ) -> None:
-        self.total = max(total, 0)
-        self.callback = callback
-        self._bar = None
-        self._current = 0
-        self._percent = 0
-
-        if show_bar and tqdm is not None and self.total > 0:
-            self._bar = tqdm(total=self.total, desc="Chunks", unit="chunk")
-
-        self._emit(0)
-
-    def _emit(self, percent: int) -> None:
-        bounded = max(0, min(100, percent))
-        self._percent = bounded
-        if self.callback:
-            self.callback(bounded)
-        if self._bar is not None:
-            self._bar.refresh()
-
-    def advance(self) -> None:
-        if self.total:
-            self._current = min(self.total, self._current + 1)
-            fraction = self._current / self.total
-            percent = int(fraction * 100)
-            if percent < self._percent:
-                percent = self._percent
-            if self._current == self.total:
-                percent = 100
-        else:
-            percent = 100
-
-        if self._bar is not None:
-            self._bar.update(1)
-
-        self._emit(percent)
-
-    def pulse(self, index: int) -> None:
-        """Emit an in-progress heartbeat for the ``index``-th chunk (1-based)."""
-
-        if self.total <= 0:
-            self._emit(min(99, self._percent + 1))
-            return
-
-        # Reserve a small fraction of progress to indicate an active chunk without
-        # overshooting the eventual completion point (index / total).
-        baseline = (index - 1) / self.total
-        target = index / self.total
-        heartbeat = baseline + max(0.02, 0.25 / self.total)
-        heartbeat = min(target - 1e-3, heartbeat)
-        heartbeat = max(baseline, heartbeat)
-        percent_float = max(heartbeat, 0.0) * 100
-        percent = int(percent_float)
-        if percent <= self._percent:
-            percent = min(99, self._percent + 1)
-        self._emit(percent)
-
-    def describe(self, text: str) -> None:
-        if self._bar is not None:
-            self._bar.set_description_str(text)
-            self._bar.refresh()
-
-    def close(self) -> None:
-        if self._bar is not None:
-            self._bar.close()
+# ------------------------------ cache ---------------------------------------
+CACHE_FORMAT = "2"
 
 
-# ------------------------------ core ----------------------------------------
 class PromptCache:
-    """Persist LLM responses keyed by prompt/model combinations."""
+    """Persist validated LLM responses.
+
+    Entries are keyed by endpoint, model, options, prompt text and the prompt/
+    schema version. Entries written by an older format are ignored: committed
+    cache data is not reference truth, and a cache hit is no approval record.
+    """
 
     def __init__(
         self,
@@ -374,22 +321,38 @@ class PromptCache:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / "responses.json"
         self.max_entries = max_entries
-        self.max_age_seconds = None if max_age_hours is None else max(0, max_age_hours) * 3600
+        self.max_age_seconds = (
+            None if max_age_hours is None else max(0, max_age_hours) * 3600
+        )
         self._entries: dict[str, dict] = {}
+        self.skipped_legacy = 0
         self._load()
 
-    # internal helpers -------------------------------------------------
     def _load(self) -> None:
         if not self.path.exists():
             self._entries = {}
             return
         try:
-            self._entries = json.loads(self.path.read_text(encoding="utf-8"))
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:
             self._entries = {}
+            return
+        entries = raw.get("entries", raw) if isinstance(raw, dict) else {}
+        kept: dict[str, dict] = {}
+        for key, entry in entries.items():
+            if isinstance(entry, dict) and entry.get("format") == CACHE_FORMAT:
+                kept[key] = entry
+            else:
+                self.skipped_legacy += 1
+        if self.skipped_legacy:
+            logging.info(
+                "ignored %d cache entry/entries without the current format marker",
+                self.skipped_legacy,
+            )
+        self._entries = kept
 
     def _normalise_cases(self, cases: Sequence[Dict]) -> list[Dict]:
-        return json.loads(json.dumps(list(cases)))  # deep copy via JSON
+        return json.loads(json.dumps(list(cases)))
 
     def _prune(self) -> None:
         if self.max_entries <= 0:
@@ -397,10 +360,10 @@ class PromptCache:
             return
         if len(self._entries) <= self.max_entries:
             return
-        sorted_items = sorted(
+        ordered = sorted(
             self._entries.items(), key=lambda item: item[1].get("ts", 0), reverse=True
         )
-        self._entries = dict(sorted_items[: self.max_entries])
+        self._entries = dict(ordered[: self.max_entries])
 
     def _expired(self, entry: dict) -> bool:
         if not entry:
@@ -412,48 +375,58 @@ class PromptCache:
             return True
         return (time.time() - float(ts)) > self.max_age_seconds
 
-    # public API -------------------------------------------------------
     def get(self, key: str) -> list[Dict] | None:
         entry = self._entries.get(key)
         if not entry or self._expired(entry):
-            if entry and self._expired(entry):
+            if entry:
                 self._entries.pop(key, None)
             return None
         return self._normalise_cases(entry.get("cases", []))
 
     def set(self, key: str, cases: Sequence[Dict]) -> None:
-        self._entries[key] = {"cases": self._normalise_cases(cases), "ts": time.time()}
+        self._entries[key] = {
+            "format": CACHE_FORMAT,
+            "cases": self._normalise_cases(cases),
+            "ts": time.time(),
+        }
         self._prune()
 
     def flush(self) -> None:
         if not self._entries:
-            # Remove cache file entirely when empty to save disk space
             if self.path.exists():
                 try:
                     self.path.unlink()
                 except OSError:
                     pass
             return
+        payload = {"format": CACHE_FORMAT, "entries": self._entries}
         try:
-            self.path.write_text(json.dumps(self._entries, ensure_ascii=False), encoding="utf-8")
+            self.path.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
         except OSError:
             logging.warning("Failed to persist cache at %s", self.path)
 
 
-def _cache_key(prompt: str, agent: AgentLocal, *, system_prompt: str | None) -> str:
+def _cache_key(prompt: str, agent, *, system_prompt: str | None) -> str:
     payload = {
         "prompt": prompt,
-        "system": system_prompt or agent.system_prompt,
-        "model": agent.model,
-        "options": agent.opt,
+        "system": system_prompt or getattr(agent, "system_prompt", ""),
+        "model": getattr(agent, "model", "unknown"),
+        "endpoint": getattr(getattr(agent, "settings", None), "endpoint", None)
+        or getattr(agent, "url", "unknown"),
+        "options": getattr(agent, "opt", {}),
+        "prompt_version": LEGACY_PROMPT_VERSION,
+        "schema_version": LEGACY_SCHEMA_VERSION,
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
+# ------------------------------ core ----------------------------------------
 def generate_test_cases(
     pdf_path: str,
-    agent: AgentLocal,
+    agent,
     n_cases: int = 6,
     combine: int = 3,
     *,
@@ -465,166 +438,121 @@ def generate_test_cases(
     show_progress: bool = False,
     logger: Callable[[str], None] | None = None,
     cache: PromptCache | None = None,
-) -> List[Dict]:
-    """Extract pages, chunk, call LLM, repair missing fields if needed.
+    should_cancel: Callable[[], bool] | None = None,
+    return_run: bool = False,
+):
+    """Legacy entry point used by the GUI worker.
 
-    Parameters
-    ----------
-    pdf_path:
-        Path to the requirements PDF.
-    agent:
-        Configured :class:`AgentLocal` (or drop-in replacement) used to call the
-        LLM.
-    n_cases:
-        Target number of cases per chunk. The LLM ultimately decides but this
-        is embedded into the system instructions.
-    combine:
-        Number of PDF pages combined into a single prompt chunk.
-    prompt_role:
-        Optional override for the system prompt. Defaults to the built-in
-        expert test architect instructions.
-    use_rag / rag_top_k / chunk_overlap:
-        Retrieval-augmentation controls. When enabled the current chunk will be
-        enriched with the ``rag_top_k`` most similar chunks selected via
-        TF–IDF. ``chunk_overlap`` controls sliding-window reuse of pages when
-        chunking the PDF.
-    progress_cb:
-        Optional callback that receives an integer ``0-100`` progress update.
-    show_progress:
-        When ``True`` and :mod:`tqdm` is installed, render a console progress
-        bar mirroring the callback updates. Useful for CLI/scripts that do not
-        hook into the Qt GUI.
-    logger:
-        Optional callable (``str -> None``) receiving human-readable log lines.
+    Delegates to :func:`spec2test.application.legacy.generate_legacy_cases`.
+    With ``return_run=True`` the :class:`GenerationRun` is returned as well, so
+    a caller can show ``completed`` / ``partial`` / ``failed`` / ``cancelled``
+    instead of assuming success.
     """
     pages = pdf_to_text_pages(pdf_path)
     if not pages:
         raise RuntimeError(f"No text extracted from {pdf_path!s}")
 
-    chunks = chunk_document(pages, combine, overlap=chunk_overlap)
+    blocks = build_blocks(pages, combine, overlap=chunk_overlap)
     _log(
-        f"Loaded {len(pages)} page(s); processing {len(chunks)} chunk(s) with combine={combine} and overlap={chunk_overlap}",
+        f"Loaded {len(pages)} page(s); processing {len(blocks)} block(s) with "
+        f"combine={combine} and overlap={chunk_overlap}",
         logger,
     )
+
     retriever: KeywordRetriever | None = None
-    if use_rag and len(chunks) > 1:
+    if use_rag and len(blocks) > 1:
         try:
-            retriever = KeywordRetriever(chunks)
-            _log("RAG retriever initialised (TF–IDF)", logger)
+            retriever = KeywordRetriever([block.text for block in blocks])
+            _log("RAG retriever initialised (TF-IDF)", logger)
         except Exception as exc:
             _log(f"⚠️  Failed to initialise retriever: {exc}", logger)
             retriever = None
 
-    sys_instr = (
-        f"Generate {n_cases} independent test cases following the JSON schema, "
-        "including the 'linked_requirements' field."
-    )
+    bar = None
+    if show_progress and tqdm is not None and blocks:
+        bar = tqdm(total=len(blocks), desc="Blocks", unit="block")
 
-    all_cases: List[Dict] = []
-    progress = _ProgressReporter(
-        total=len(chunks),
-        callback=progress_cb,
-        show_bar=show_progress,
-    )
+    def build_prompt(block, total: int, text: str) -> str:
+        prompt = (
+            f"Generate at most {n_cases} independent test cases following the JSON "
+            "schema, including the 'linked_requirements' field.\n-----\n"
+            f"Requirements excerpt ({block.index}/{total}, {block.label()}):\n"
+            f"{text}\n-----"
+        )
+        if retriever:
+            related = retriever.top_k(text, rag_top_k, exclude_idx=block.index - 1)
+            if related:
+                prompt += "\nRelated context (auto-selected):\n" + "\n-----\n".join(related)
+        return prompt
 
     cache_hits = 0
-    cache_misses = 0
+
+    def cache_get(prompt: str) -> list[Dict] | None:
+        nonlocal cache_hits
+        if not cache:
+            return None
+        hit = cache.get(_cache_key(prompt, agent, system_prompt=prompt_role))
+        if hit is not None:
+            cache_hits += 1
+        return hit
+
+    def cache_set(prompt: str, cases: Sequence[Dict]) -> None:
+        if cache and cases:
+            cache.set(_cache_key(prompt, agent, system_prompt=prompt_role), list(cases))
+
+    def progress(percent: int) -> None:
+        if bar is not None:
+            bar.update(1)
+        if progress_cb:
+            progress_cb(percent)
+
+    if progress_cb:
+        progress_cb(0)
 
     try:
-        for idx, chunk in enumerate(chunks, 1):
-            progress.describe(f"Chunk {idx}/{len(chunks)}")
-            progress.pulse(idx)
-            _log(f"⏳ Generating chunk {idx}/{len(chunks)}…", logger)
-            prompt = (
-                f"{sys_instr}\n-----\nRequirements excerpt ({idx}/{len(chunks)}):\n"
-                f"{chunk}\n-----"
-            )
-            if retriever:
-                related = retriever.top_k(chunk, rag_top_k, exclude_idx=idx - 1)
-                if related:
-                    prompt += (
-                        "\nRelated context (auto-selected):\n"
-                        + "\n-----\n".join(related)
-                    )
-            cache_key = None
-            cases: List[Dict] | None = None
-            if cache:
-                cache_key = _cache_key(prompt, agent, system_prompt=prompt_role)
-                cases = cache.get(cache_key)
-                if cases is not None:
-                    cache_hits += 1
-                    _log(
-                        f"💾 Cache hit for chunk {idx}/{len(chunks)} (reusing {len(cases)} cases)",
-                        logger,
-                    )
-
-            t0 = time.perf_counter()
-            if cases is None:
-                raw = agent.generate(prompt, system_prompt=prompt_role)
-                cases = parse_cases(raw)
-
-                if not cases:
-                    retry_prompt = (
-                        f"{prompt}\n\nThe answer must be a JSON array with the required keys."
-                    )
-                    raw_retry = agent.generate(retry_prompt, system_prompt=prompt_role)
-                    cases = parse_cases(raw_retry)
-
-                cache_misses += 1
-
-            # --- self-repair if missing fields --------------------------------
-            incomplete = [c for c in cases if _missing_fields(c)]
-            if incomplete:
-                repair_prompt = (
-                    "The following cases have empty fields. Rewrite them with every "
-                    "field filled. Schema unchanged.\n\n"
-                    f"{json.dumps(incomplete, ensure_ascii=False, indent=2)}"
-                )
-                fixed_raw = agent.generate(repair_prompt, system_prompt=prompt_role)
-                fix = parse_cases(fixed_raw)
-                fixes_iter = iter(fix)
-                for i, c in enumerate(cases):
-                    if _missing_fields(c):
-                        cases[i] = next(fixes_iter, c)
-
-            if cache and cache_key:
-                cache.set(cache_key, cases)
-
-            dt = time.perf_counter() - t0
-            logging.info(
-                "Chunk %d/%d → %d cases (%.1fs)", idx, len(chunks), len(cases), dt
-            )
-            all_cases.extend(cases)
-
-            progress.advance()
-            _log(
-                f"✅ Chunk {idx}/{len(chunks)} complete – {len(cases)} cases in {dt:.1f}s",
-                logger,
-            )
+        cases, run = generate_legacy_cases(
+            pages,
+            agent,
+            document_id=Path(pdf_path).name,
+            combine=combine,
+            overlap=chunk_overlap,
+            n_cases=n_cases,
+            prompt_role=prompt_role,
+            build_prompt=build_prompt,
+            model_name=getattr(agent, "model", "unknown"),
+            endpoint=getattr(agent, "url", "unknown"),
+            log=lambda msg: _log(msg, logger),
+            progress=progress,
+            should_cancel=should_cancel,
+            cache_get=cache_get if cache else None,
+            cache_set=cache_set if cache else None,
+        )
     finally:
-        progress.close()
+        if bar is not None:
+            bar.close()
         if cache:
             cache.flush()
-            if cache_hits or cache_misses:
-                _log(
-                    f"💾 Cache stats – hits: {cache_hits}, misses: {cache_misses}",
-                    logger,
-                )
+
+    if progress_cb:
+        # 100% only means the processing ended; run.status says whether it worked.
+        progress_cb(100)
 
     _log(
-        f"Generated {len(all_cases)} total test case(s) from {len(chunks)} chunk(s)",
+        f"Run {run.run_id} finished with status '{run.status.value}': "
+        f"{len(cases)} test case(s) from {len(blocks)} block(s)"
+        + (f", {cache_hits} cache hit(s)" if cache_hits else ""),
         logger,
     )
-
-    return all_cases
+    if return_run:
+        return cases, run
+    return cases
 
 
 def _normalise_list(val) -> list[str]:
     if isinstance(val, list):
         return [str(v).strip() for v in val if str(v).strip()]
     if isinstance(val, str):
-        parts = [p.strip() for p in re.split(r"[,;\n]+", val) if p.strip()]
-        return parts
+        return [p.strip() for p in re.split(r"[,;\n]+", val) if p.strip()]
     return []
 
 
@@ -637,8 +565,7 @@ def _count_steps(value) -> int:
 
 
 def summarise_cases(cases: Sequence[Dict]) -> Dict[str, object]:
-    """Produce simple analytics about generated cases for quick QA."""
-
+    """Simple analytics about generated cases for quick QA."""
     total = len(cases)
     missing_counts = {field: 0 for field in ALLOWED_KEYS}
     complete_cases = 0
