@@ -92,7 +92,8 @@ def test_a_step_without_an_expectation_is_an_error():
     assert report.blocks_draft is True
 
 
-def test_step_order_must_be_consecutive():
+def test_a_gap_in_the_numbering_is_tolerated():
+    """A draft is renumbered on assembly; the sequence is what matters."""
     report = validate_test_case(
         case(
             steps=(
@@ -102,7 +103,21 @@ def test_step_order_must_be_consecutive():
         ),
         [requirement()],
     )
-    assert "E_STEP_ORDER" in report.codes()
+    assert "E_STEP_ORDER" not in report.codes()
+
+
+def test_an_ambiguous_step_order_is_an_error():
+    for orders in ((2, 1), (1, 1)):
+        report = validate_test_case(
+            case(
+                steps=tuple(
+                    TestStep(order=order, action="a", expectations=("0.2 deg",))
+                    for order in orders
+                )
+            ),
+            [requirement()],
+        )
+        assert "E_STEP_ORDER" in report.codes(), orders
 
 
 def test_a_step_order_below_one_is_rejected_by_the_model_itself():

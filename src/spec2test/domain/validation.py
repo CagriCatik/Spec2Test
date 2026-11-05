@@ -226,13 +226,19 @@ def _validate_step(
 def _validate_step_sequence(
     steps: Sequence[TestStep], path: str, report: ValidationReport
 ) -> None:
+    """The stored steps must form a clear sequence.
+
+    A draft is renumbered to 1..n when it is assembled, so a model that counts
+    continuously across the three lists is not punished for it. What stays an
+    error is an ambiguous sequence: a repeated or unordered position.
+    """
     orders = [step.order for step in steps]
-    if orders != list(range(1, len(steps) + 1)):
+    if orders != sorted(orders) or len(set(orders)) != len(orders):
         report.add(
             "E_STEP_ORDER",
             Severity.ERROR,
             path,
-            f"step order must be 1..{len(steps)}, got {orders}",
+            f"step order must be unique and increasing, got {orders}",
         )
 
 

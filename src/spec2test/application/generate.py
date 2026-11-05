@@ -367,6 +367,7 @@ def _process_unit(
     )
     attempt_no = 0
     last_raw = ""
+    previous_raw: str | None = None
 
     while True:
         attempt_no += 1
@@ -399,6 +400,7 @@ def _process_unit(
             )
             return result
 
+        previous_raw = last_raw if attempt_no > 1 else None
         last_raw = reply.text
         parsed = parse_model_response(reply.text)
         cases: list[TestCase] = []
@@ -485,6 +487,25 @@ def _process_unit(
                 f"  {unit.unit_id}: {len(accepted)} draft(s) accepted"
                 + (f", {len(result.issues)} finding(s)" if result.issues else "")
                 + (f" after {attempt_no - 1} repair(s)" if attempt_no > 1 else ""),
+            )
+            return result
+
+        if is_repair and reply.text == previous_raw:
+            issues.append(
+                ValidationIssue(
+                    "C_REPAIR_IDENTICAL",
+                    Severity.CLARIFICATION,
+                    unit.unit_id,
+                    "the repair returned exactly the same answer; further "
+                    "attempts would only cost usage without changing anything",
+                )
+            )
+            result.status = UnitStatus.REJECTED
+            result.issues = [*context_issues_of(result), *issues]
+            _log(
+                log,
+                f"  {unit.unit_id}: repair returned an identical answer; "
+                "stopping instead of spending another call",
             )
             return result
 

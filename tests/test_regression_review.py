@@ -333,3 +333,131 @@ def test_the_shipped_configuration_drives_the_cli(tmp_path, monkeypatch, capsys)
     code = cli.main(["run", "--spec", str(spec), "--mode", "fake", "--out", str(tmp_path / "r")])
     assert code == 0
     assert "mode: fake" in capsys.readouterr().out
+
+
+# =====================================================================
+# Findings from the retrieval benchmark over the BMS corpus
+# =====================================================================
+def _benchmark_requirement():
+    text = "SYS-REQ-0001: The system shall react within 100 ms."
+    return Requirement(
+        "REQ-1", text, (SourceSpan("doc-1", 0, len(text), text, page=1),), "SYS-REQ-0001"
+    )
+
+
+def _benchmark_case(**kwargs):
+    from spec2test.domain.models import TestCase, TestStep
+
+    base = dict(
+        case_id="TC-1",
+        title="t",
+        objective="o",
+        requirement_ids=("REQ-1",),
+        steps=(TestStep(1, "trigger", ("the reaction takes 100 ms",)),),
+    )
+    base.update(kwargs)
+    return TestCase(**base)
+
+def test_continuous_step_numbering_across_the_lists_is_accepted():
+    """Three of four failed benchmark runs were caused by this rule alone.
+
+    A model that numbers preconditions 1,2 then steps 3,4,5 carries the same
+    information. The draft is renumbered instead of rejected.
+    """
+    import json
+
+    from spec2test.adapters.fake.model import ScriptedModel
+    from spec2test.application.contracts import SCHEMA_VERSION
+    from spec2test.application.generate import generate_drafts
+
+    answer = json.dumps(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "test_cases": [
+                {
+                    "title": "t",
+                    "objective": "o",
+                    "requirement_refs": ["SYS-REQ-0001"],
+                    "preconditions": [
+                        {"order": 1, "action": "power up", "expectations": ["ready"]},
+                        {"order": 2, "action": "clear faults", "expectations": ["none"]},
+                    ],
+                    "steps": [
+                        {"order": 3, "action": "trigger", "expectations": ["100 ms"]},
+                        {"order": 4, "action": "observe", "expectations": ["100 ms"]},
+                    ],
+                    "postconditions": [
+                        {"order": 5, "action": "shut down", "expectations": ["safe"]}
+                    ],
+                }
+            ],
+        }
+    )
+    run = generate_drafts([_benchmark_requirement()], ScriptedModel([answer]))
+
+    assert run.status is RunStatus.COMPLETED, "the draft was rejected over numbering"
+    case = run.test_cases[0]
+    assert [s.order for s in case.preconditions] == [1, 2]
+    assert [s.order for s in case.steps] == [1, 2]
+    assert [s.order for s in case.postconditions] == [1]
+    assert case.steps[0].action == "trigger", "the given order is kept"
+
+
+def test_an_ambiguous_step_order_is_still_an_error():
+    from spec2test.domain.models import TestStep
+    from spec2test.domain.validation import validate_test_case
+
+    duplicated = _benchmark_case(
+        steps=(
+            TestStep(2, "second", ("100 ms",)),
+            TestStep(2, "also second", ("100 ms",)),
+        )
+    )
+    report = validate_test_case(duplicated, [_benchmark_requirement()])
+    assert "E_STEP_ORDER" in report.codes()
+
+
+def test_a_repair_returning_the_identical_answer_stops_the_unit():
+    """The benchmark showed repairs that returned byte-identical output."""
+    from spec2test.adapters.fake.model import ScriptedModel
+    from spec2test.application.generate import GenerationSettings, generate_drafts
+
+    broken = '{"schema_version":"1.0","test_cases":[{"title":'
+    model = ScriptedModel([broken, broken, broken])
+
+    run = generate_drafts(
+        [_benchmark_requirement()],
+        model,
+        settings=GenerationSettings(max_repair_attempts=2),
+    )
+
+    assert model.call_count == 2, "the second repair was spent on the same answer"
+    codes = {issue.code for unit in run.units for issue in unit.issues}
+    assert "C_REPAIR_IDENTICAL" in codes
+    assert run.status is RunStatus.FAILED
+
+
+def test_a_repair_that_changes_something_is_still_allowed():
+    import json
+
+    from spec2test.adapters.fake.model import ScriptedModel
+    from spec2test.application.contracts import SCHEMA_VERSION
+    from spec2test.application.generate import generate_drafts
+
+    good = json.dumps(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "test_cases": [
+                {
+                    "title": "t",
+                    "objective": "o",
+                    "requirement_refs": ["SYS-REQ-0001"],
+                    "steps": [
+                        {"order": 1, "action": "a", "expectations": ["100 ms"]}
+                    ],
+                }
+            ],
+        }
+    )
+    run = generate_drafts([_benchmark_requirement()], ScriptedModel(["broken", good]))
+    assert run.status is RunStatus.COMPLETED

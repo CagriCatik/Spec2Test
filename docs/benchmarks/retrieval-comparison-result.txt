@@ -1,0 +1,65 @@
+80 runs over 20 requirements
+
+== without retrieval (40 runs) ==
+  completed/partial/failed: 37/0/3   success rate 92%
+  drafts             1.82 per run
+  open questions     8.28 per run
+  unsupported        1.27 per run
+  value from context 0.00 per run
+  no criterion       6.00 per run
+  possible conflict  0.00 per run
+  context items      0.00 per run
+  model calls        1.50 per run
+  repairs            0.50 per run
+  seconds            10.8 per run
+
+== with retrieval (40 runs) ==
+  completed/partial/failed: 37/0/3   success rate 92%
+  drafts             1.85 per run
+  open questions     8.10 per run
+  unsupported        1.62 per run
+  value from context 0.07 per run
+  no criterion       5.45 per run
+  possible conflict  0.20 per run
+  context items      1.55 per run
+  context referenced in the draft: 16/62 items
+  model calls        1.55 per run
+  repairs            0.55 per run
+  seconds            10.3 per run
+
+== failures ==
+  BMS-REQ-CHG-0601     retrieval=False rep1 -> failed, answer
+      codes: ['E_INVALID_JSON']
+  BMS-REQ-UDS-1301     retrieval=False rep1 -> failed, answer
+      codes: ['C_NO_MEASURABLE_CRITERION', 'E_STEP_ORDER']
+  BMS-REQ-EST-0201     retrieval=False rep2 -> failed, answer
+      codes: ['C_NO_MEASURABLE_CRITERION', 'C_UNSUPPORTED_VALUE', 'E_STEP_ORDER']
+  BMS-REQ-MECH-1101    retrieval=True  rep1 -> failed, answer
+      codes: ['C_NO_MEASURABLE_CRITERION', 'E_STEP_ORDER']
+  BMS-REQ-CHG-0601     retrieval=True  rep2 -> failed, answer
+      codes: ['C_NO_MEASURABLE_CRITERION', 'C_POSSIBLE_VALUE_CONFLICT', 'C_UNSUPPORTED_VALUE', 'C_VALUE_FROM_CONTEXT', 'E_STEP_ORDER']
+  BMS-REQ-DIA-0701     retrieval=True  rep2 -> failed, answer
+      codes: ['C_NO_MEASURABLE_CRITERION', 'E_STEP_ORDER']
+
+== per requirement (questions / unsupported, mean of 2 runs) ==
+  requirement             q no-ret   q ret  uns no-ret  uns ret
+  BMS-REQ-AFE-0101            14.0    16.0         2.5      7.0
+  BMS-REQ-AUX-1401             5.5     8.5         1.0      1.0
+  BMS-REQ-BAL-0501             5.0    12.0         2.5      6.5
+  BMS-REQ-BRK-1701             8.5     6.5         0.0      0.0
+  BMS-REQ-CHG-0601             2.5     3.5         2.5      3.5
+  BMS-REQ-COM-0801             9.5    10.0         2.0      0.0
+  BMS-REQ-DIA-0701             9.5     4.5         0.0      0.0
+  BMS-REQ-DSC-1501            16.5     8.5         1.5      0.5
+  BMS-REQ-EST-0201             3.5     4.5         2.5      1.0
+  BMS-REQ-HVC-0301            18.0    18.0         0.5      1.5
+  BMS-REQ-MECH-1101            1.5     1.5         0.0      0.0
+  BMS-REQ-PWR-0901             9.5     8.5         3.0      1.5
+  BMS-REQ-SC-0901              6.0     7.0         3.0      5.0
+  BMS-REQ-SEC-1001            14.5     9.5         1.0      1.0
+  BMS-REQ-SYS-0010             8.5    13.5         1.5      0.5
+  BMS-REQ-THM-0401             6.5     5.0         0.5      1.0
+  BMS-REQ-UDS-1301             1.5     6.0         0.0      1.0
+  BMS-REQ-VNV-1201            13.0    10.0         0.0      0.0
+  BMS-REQ-XCP-1801             7.0     6.0         0.0      0.0
+  BMS-REQ-XFC-1601             5.0     3.0         1.5      1.5

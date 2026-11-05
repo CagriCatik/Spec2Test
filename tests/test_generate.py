@@ -177,7 +177,8 @@ def test_the_repair_prompt_contains_the_source_the_answer_and_the_findings():
 
 
 def test_repairs_are_bounded_and_the_unit_is_then_rejected():
-    model = ScriptedModel(["bad"] * 5)
+    # each answer differs, so the repair budget is actually used
+    model = ScriptedModel(["bad one", "bad two", "bad three", "bad four"])
     run = generate_drafts(
         [requirement()], model, settings=GenerationSettings(max_repair_attempts=2)
     )

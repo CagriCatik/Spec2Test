@@ -27,9 +27,17 @@ from .contracts import (
 
 
 def _steps(contracts: Sequence[StepContract]) -> tuple[TestStep, ...]:
+    """Renumber each list to 1..n, keeping the order the model gave.
+
+    Models often number continuously across preconditions, steps and
+    postconditions (1,2 | 3,4,5 | 6). That carries the same information, and
+    rejecting a whole draft over it would be pedantry - the sequence is what
+    matters, not the first number.
+    """
+    ordered = sorted(contracts, key=lambda step: step.order)
     return tuple(
         TestStep(
-            order=step.order,
+            order=position,
             action=step.action,
             expectations=tuple(step.expectations),
             measurements=tuple(
@@ -43,7 +51,7 @@ def _steps(contracts: Sequence[StepContract]) -> tuple[TestStep, ...]:
                 for m in step.measurements
             ),
         )
-        for step in contracts
+        for position, step in enumerate(ordered, 1)
     )
 
 
