@@ -1,0 +1,131 @@
+# Reference expectations for the synthetic fixture set (AP 0).
+#
+# These are review expectations, NOT expected model output. No test asserts on
+# model wording. Each entry records:
+#   intents              - which test intentions a usable draft should cover
+#   required_evidence    - values/IDs that MUST be traceable to the source text
+#   forbidden_additions  - details the model must not invent as a specification;
+#                          if it needs them, they belong in open_questions
+fixture_set_version: 1
+language_mix: [de, en]
+
+requirements:
+  RAS-SW-REQ-0001:
+    document: spec_a.md
+    kind: nominal
+    intents:
+      - steady-state deviation measured at the specified speed
+    required_evidence: ["0.2 deg", "50 km/h"]
+    forbidden_additions:
+      - tolerance values other than 0.2 deg
+      - measurement duration or sample rate (not specified)
+
+  RAS-SW-REQ-0002:
+    document: spec_a.md
+    kind: nominal_de
+    intents:
+      - counter-steering angle below the speed threshold
+    required_evidence: ["10 km/h", "10 deg"]
+    forbidden_additions:
+      - concrete ramp rate (not specified)
+
+  RAS-SW-REQ-0003:
+    document: spec_a.md
+    kind: lower_boundary
+    intents:
+      - at the lower limit
+      - below the lower limit is rejected
+    required_evidence: ["-10.0 deg"]
+    forbidden_additions:
+      - a hysteresis or margin value (not specified)
+
+  RAS-SW-REQ-0004:
+    document: spec_a.md
+    kind: upper_boundary
+    intents:
+      - at the upper limit
+      - above the upper limit is rejected
+    required_evidence: ["+10.0 deg"]
+    forbidden_additions:
+      - a hysteresis or margin value (not specified)
+
+  RAS-SW-REQ-0005:
+    document: spec_a.md
+    kind: timing
+    intents:
+      - fault injection and reaction time
+      - DTC is set
+    required_evidence: ["100 ms", "C1A27"]
+    forbidden_additions:
+      - additional DTCs
+      - a debounce time (not specified)
+
+  RAS-SW-REQ-0006:
+    document: spec_a.md
+    kind: multiple_conditions
+    intents:
+      - both conditions true
+      - only one condition true
+    required_evidence: ["80 km/h", "5 deg/s", "2.0 deg"]
+    forbidden_additions:
+      - priority between the two conditions (not specified)
+
+  RAS-SW-REQ-0007:
+    document: spec_a.md
+    kind: missing_limit
+    intents:
+      - cannot be tested as specified
+    required_evidence: []
+    expected_open_questions:
+      - which speed counts as "driving fast"
+      - which angle counts as "a safe value"
+    forbidden_additions:
+      - any numeric speed threshold
+      - any numeric angle limit
+
+  RAS-SW-REQ-0008:
+    document: spec_a.md
+    kind: contradiction
+    intents:
+      - behaviour after a single CAN message loss
+    required_evidence: []
+    expected_open_questions:
+      - contradicts RAS-SW-REQ-0009 (remain available vs. deactivate)
+    forbidden_additions:
+      - silently choosing one of the two behaviours
+
+  RAS-SW-REQ-0009:
+    document: spec_a.md
+    kind: contradiction
+    intents:
+      - behaviour after a single CAN message loss
+    required_evidence: ["0 deg"]
+    expected_open_questions:
+      - contradicts RAS-SW-REQ-0008
+    forbidden_additions:
+      - silently choosing one of the two behaviours
+
+  RAS-SW-REQ-0010:
+    document: pages/*.txt (spans the page 3/4 boundary)
+    kind: page_spanning
+    intents:
+      - limiting above the speed threshold
+      - status reporting within the time limit
+    required_evidence: ["120 km/h", "1.0 deg", "50 ms", "RAS_Status"]
+    forbidden_additions:
+      - CAN signal names other than RAS_Status
+
+unidentified_requirements:
+  - document: spec_a.md
+    kind: missing_external_id
+    text_contains: "diagnostic session shall be terminated"
+    expectation: >
+      Gets a stable internal ID. The internal ID must never be exported as an
+      ID of the source document.
+
+duplicate_external_ids:
+  - external_id: RAS-SW-REQ-0001
+    documents: [spec_a.md, spec_b.md]
+    expectation: >
+      Must stay two distinct requirements with two distinct internal IDs.
+      Merging them silently is a defect.

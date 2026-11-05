@@ -1,0 +1,5 @@
+Synthetic RAS Specification - Page 3 of 5
+PAGE-MARKER-3
+
+RAS-SW-REQ-0010: Die Hinterachslenkung muss bei einer Geschwindigkeit von
+mehr als 120 km/h den Hinterradwinkel auf 1.0 deg begrenzen und den

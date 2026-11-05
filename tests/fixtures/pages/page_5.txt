@@ -1,0 +1,5 @@
+Synthetic RAS Specification - Page 5 of 5
+PAGE-MARKER-5
+
+RAS-SW-REQ-0007: The system shall limit the rear wheel angle to a safe value
+when the vehicle is driving fast.

@@ -1,0 +1,5 @@
+Synthetic RAS Specification - Page 2 of 5
+PAGE-MARKER-2
+
+RAS-SW-REQ-0005: After detection of an actuator position sensor fault the
+system shall enter the degraded state within 100 ms and set DTC C1A27.

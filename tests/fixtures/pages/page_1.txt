@@ -1,0 +1,5 @@
+Synthetic RAS Specification - Page 1 of 5
+PAGE-MARKER-1
+
+RAS-SW-REQ-0001: The rear axle steering shall follow the commanded rear wheel
+angle with a steady-state deviation of at most 0.2 deg at 50 km/h.
