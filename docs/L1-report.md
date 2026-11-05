@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  628 bestanden, 4 übersprungen (mit scikit-learn)
+pytest -q  →  639 bestanden, 4 übersprungen (mit scikit-learn)
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -604,6 +604,31 @@ Ablehnungen, die Revision zum Zeitpunkt der Freigabe und die Kategorien der
 Beanstandungen – also Fehlerart und Nachbearbeitungsaufwand.
 
 Teststand: **628 bestanden, 4 übersprungen**.
+
+## 15 Neuer Anforderungsbestand
+
+Die alten Beispieldateien `requirements/sw_req_spec_ras.{md,pdf}` wurden auf
+Wunsch entfernt; im Repository liegen jetzt 22 Dokumente einer
+Batteriemanagement-Spezifikation.
+
+Dabei fiel ein Fehler auf: der Importer erfasste aus diesen 22 Dokumenten nur
+**9 Anforderungen**. Die neuen Dokumente nummerieren als `BMS-REQ-AFE-0101`,
+also mit einem Teilsystemsegment **nach** `REQ`, während das Standardmuster
+Ziffern unmittelbar danach verlangte. Das Muster erkennt jetzt beide Formen
+sowie die Kurzformen `SYS-REQ-004` und `REQ-12`; Bezeichner ohne `REQ`-Segment
+wie `BMS-SRS-02-AFE-SENSING`, `CAN-FD` oder `SHUNT_RES` werden weiterhin nicht
+verwechselt. Ergebnis: **138 Anforderungen, davon 132 mit externer ID**.
+
+Ebenfalls korrigiert: eine leere Markdown-Überschrift löste die PDF-Warnung
+„page None contains no extractable text … OCR" aus. Die Warnung gilt jetzt nur
+für seitenbasierte Dokumente.
+
+`config.yml` zeigt auf ein Dokument des neuen Bestands. Der Standard-Prompt ist
+auf `Prompt_Advanced_Test_Architect.txt` umgestellt: die Expertenvariante ist
+auf Hinterachslenkung geschrieben und würde bei Batteriethemen in die Irre
+führen. Beide Dateien bleiben erhalten.
+
+Teststand: **639 bestanden, 4 übersprungen**.
 
 ## 9 Commits
 

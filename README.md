@@ -395,7 +395,7 @@ export OLLAMA_API_KEY=...          # cloud mode only
 spec2test models --mode ollama_cloud --model gpt-oss:120b
 
 # full example run: import, generate, validate, show drafts, store the run
-spec2test run --spec requirements/sw_req_spec_ras.md --out runs
+spec2test run --spec requirements/01_system_architecture_and_operating_modes.md --out runs
 
 # force a mode regardless of the configuration
 spec2test run --spec my_spec.pdf --mode ollama_cloud --model gpt-oss:120b
@@ -534,7 +534,7 @@ spec2test/
 │   └── cli.py                  # example run and model listing
 ├── prompts/                    # project guidance, no format instructions
 │   └── legacy/                 # the old format-prescribing prompts
-├── requirements/               # synthetic rear-axle-steering requirements
+├── requirements/               # requirement documents of the project
 ├── tests/                      # unit, layering, UI and opt-in live tests
 └── docs/L1-report.md           # delivery report
 ```

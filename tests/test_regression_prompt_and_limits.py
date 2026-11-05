@@ -98,7 +98,8 @@ def test_the_shipped_configuration_produces_a_usable_system_prompt():
     system = messages[0].content
     for marker in CONTRACT_MARKERS:
         assert marker in system
-    assert "Rear-Axle" in system or "test architect" in system.lower()
+    assert guidance.strip() in system, "the configured guidance must be passed on"
+    assert GUIDANCE_HEADER in system, "and it must be marked as lower precedence"
 
 
 def test_guidance_is_appended_never_substituted():

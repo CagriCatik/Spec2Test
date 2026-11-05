@@ -188,3 +188,67 @@ def test_content_hash_changes_with_the_content(tmp_path):
     second = tmp_path / "b.txt"
     second.write_text("SYS-REQ-1: must do 2 s\n", encoding="utf-8")
     assert ingest(first).document.content_hash != ingest(second).document.content_hash
+
+
+# ------------------------------------------------- requirement ID forms ------
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("RAS-SW-REQ-0010.3: the angle shall be 1.0 deg", "RAS-SW-REQ-0010.3"),
+        ("BMS-REQ-AFE-0101: the ADC shall sample every 10 ms", "BMS-REQ-AFE-0101"),
+        ("BMS-REQ-HV-0407: the contactor shall open within 20 ms", "BMS-REQ-HV-0407"),
+        ("SYS-REQ-004: the system shall start within 2 s", "SYS-REQ-004"),
+        ("REQ-12: the lamp shall light within 1 s", "REQ-12"),
+    ],
+)
+def test_the_common_requirement_id_forms_are_recognised(tmp_path, line, expected):
+    path = tmp_path / "spec.md"
+    path.write_text(line + "\n", encoding="utf-8")
+    captured = ingest(path).requirements
+    assert [r.external_id for r in captured] == [expected]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "BMS-SRS-02-AFE-SENSING is the document identifier.",
+        "The module follows ISO 26262 and shall be verified.",
+        "Signals such as SHUNT_RES and CAN-FD shall be logged.",
+    ],
+)
+def test_identifier_like_text_is_not_mistaken_for_a_requirement_id(tmp_path, text):
+    path = tmp_path / "spec.md"
+    path.write_text(text + "\n", encoding="utf-8")
+    assert [r.external_id for r in ingest(path).requirements if r.external_id] == []
+
+
+def test_the_requirement_documents_of_this_repository_can_be_imported():
+    """A smoke test over whatever specifications the project ships."""
+    folder = Path(__file__).resolve().parents[1] / "requirements"
+    documents = sorted(folder.glob("*.md"))
+    if not documents:
+        pytest.skip("the repository ships no requirement documents")
+
+    captured = 0
+    for path in documents:
+        result = ingest(path)
+        captured += len([r for r in result.requirements if r.external_id])
+    assert captured > 0, "no requirement was captured from the shipped documents"
+
+
+def test_an_empty_markdown_section_does_not_warn_about_ocr(tmp_path):
+    """The OCR warning belongs to page-based documents, not to headings."""
+    path = tmp_path / "spec.md"
+    path.write_text(
+        "# Title\n\n## Empty section\n\n## Content\n\n"
+        "SYS-REQ-0001: The system shall start within 2 s.\n",
+        encoding="utf-8",
+    )
+    result = ingest(path)
+    assert result.warnings == []
+    assert [r.external_id for r in result.requirements] == ["SYS-REQ-0001"]
+
+
+def test_an_empty_pdf_page_still_warns(empty_page_pdf):
+    warnings = ingest(empty_page_pdf).warnings
+    assert any("page 2" in w and "OCR" in w for w in warnings)

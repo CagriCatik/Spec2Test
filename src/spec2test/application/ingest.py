@@ -22,8 +22,13 @@ from ..domain.models import (
 )
 from .ports import DocumentImportPort, ImportedDocument, TextSegment
 
-# e.g. RAS-SW-REQ-0010.3, REQ-12, SYS-REQ-004
-DEFAULT_REQUIREMENT_ID_PATTERN = r"\b([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-REQ-\d+(?:\.\d+)*)\b"
+# Uppercase segments around a REQ marker, ending in a number. Matches
+#   RAS-SW-REQ-0010.3      prefix before REQ
+#   BMS-REQ-AFE-0101       subsystem segment after REQ
+#   SYS-REQ-004, REQ-12    the short forms
+DEFAULT_REQUIREMENT_ID_PATTERN = (
+    r"\b((?:[A-Z][A-Z0-9]*-)*REQ(?:-[A-Z][A-Z0-9]*)*-\d+(?:\.\d+)*)\b"
+)
 
 _MODAL_WORDS = (
     "shall",
@@ -222,7 +227,10 @@ def extract_requirements(
     result.requirements.sort(key=lambda r: r.spans[0].char_start if r.spans else 0)
 
     for segment in segments:
-        if segment.is_empty:
+        # Only page-based documents are worth warning about: an empty section
+        # in Markdown is just a heading, while an empty PDF page may hide
+        # content in an image.
+        if segment.is_empty and segment.page is not None:
             result.warnings.append(
                 f"{document.filename}: page {segment.page} contains no extractable "
                 "text (empty or image-only); OCR is out of scope"
