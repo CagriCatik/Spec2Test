@@ -49,9 +49,17 @@ from PySide6.QtWidgets import (
 )
 
 from ..adapters.export import save_csv, save_xlsx, summarise_rows
+from ..adapters.persistence.project_store import (
+    PROJECT_SUFFIX,
+    ProjectFileError,
+    ProjectLocked,
+    ProjectStore,
+)
+from ..application.review import add_run, project_from_run
 from ..adapters.ollama import API_KEY_ENV, capabilities_for, check_model_choice
 from ..application.legacy import legacy_rows
 from ..bootstrap import default_config_path, generation_settings_from_config
+from ..domain.models import ReviewStatus
 from ..config import (
     DEFAULT_JOB_TIMEOUT_S,
     MODE_CLOUD,
@@ -61,6 +69,7 @@ from ..config import (
 )
 from .help_text import PARAMETER_DOC
 from .models import TestCaseTableModel
+from .review_panel import STATUS_TEXT, ReviewPanel
 from .workers import DraftTask, ModelListTask
 
 ASSETS: Final[Path] = Path(__file__).resolve().parents[3] / "assets"
@@ -141,6 +150,10 @@ class MainWindow(QMainWindow):
         self._guidance_path: Path | None = None
         self._cases: list[dict] = []
         self._run = None
+        self._project = None
+        self._project_store: ProjectStore | None = None
+        self._last_requirements: list = []
+        self._last_documents: list = []
         self._task: DraftTask | None = None
         self._start_time: float | None = None
         self._model_list_pending = False
@@ -171,6 +184,17 @@ class MainWindow(QMainWindow):
         for title, slot, shortcut in (
             ("Open specification…", self.select_specifications, "Ctrl+O"),
             ("Open guidance file…", self.select_guidance, None),
+        ):
+            action = QAction(title, self)
+            action.triggered.connect(slot)
+            if shortcut:
+                action.setShortcut(shortcut)
+            file_menu.addAction(action)
+        file_menu.addSeparator()
+        for title, slot, shortcut in (
+            ("Open project…", self.open_project, "Ctrl+Shift+O"),
+            ("Save project", self.save_project, "Ctrl+S"),
+            ("Save project as…", self.save_project_as, "Ctrl+Shift+S"),
         ):
             action = QAction(title, self)
             action.triggered.connect(slot)
@@ -364,11 +388,24 @@ class MainWindow(QMainWindow):
     def _build_results_panel(self) -> QWidget:
         self.tabs = QTabWidget()
 
+        drafts_tab = QWidget()
+        drafts_layout = QVBoxLayout(drafts_tab)
+        drafts_layout.setContentsMargins(0, 0, 0, 0)
+        drafts_split = QSplitter(Qt.Vertical)
         self.drafts = QTreeWidget()
         self.drafts.setHeaderLabels(["Test draft", "Status"])
         self.drafts.setColumnWidth(0, 560)
         self.drafts.setAlternatingRowColors(True)
-        self.tabs.addTab(self.drafts, "Test drafts")
+        self.drafts.currentItemChanged.connect(self._on_draft_selected)
+        drafts_split.addWidget(self.drafts)
+        self.review = ReviewPanel()
+        self.review.logged.connect(self.log_line)
+        self.review.changed.connect(self._on_review_changed)
+        drafts_split.addWidget(self.review)
+        drafts_split.setStretchFactor(0, 3)
+        drafts_split.setStretchFactor(1, 2)
+        drafts_layout.addWidget(drafts_split)
+        self.tabs.addTab(drafts_tab, "Test drafts")
 
         self.requirements = QTreeWidget()
         self.requirements.setHeaderLabels(["Requirement and source", "Clarification"])
@@ -733,6 +770,7 @@ class MainWindow(QMainWindow):
         self._task = task
         task.signals.progress.connect(self.progress.setValue)
         task.signals.message.connect(self.log_line)
+        task.signals.documents.connect(self._remember_documents)
         task.signals.requirements.connect(self.show_requirements)
         task.signals.finished.connect(self.show_run)
         task.signals.error.connect(self._on_error)
@@ -770,7 +808,11 @@ class MainWindow(QMainWindow):
             self.log.ensureCursorVisible()
         print(message, flush=True)
 
+    def _remember_documents(self, documents) -> None:
+        self._last_documents = list(documents)
+
     def show_requirements(self, requirements) -> None:
+        self._last_requirements = list(requirements)
         self.requirements.clear()
         for requirement in requirements:
             top = QTreeWidgetItem(
@@ -793,15 +835,18 @@ class MainWindow(QMainWindow):
     def show_run(self, run) -> None:
         self._reset_buttons()
         self._run = run
+        self._absorb_run(run)
 
         elapsed = None
         if self._start_time is not None:
             elapsed = time.perf_counter() - self._start_time
             self._start_time = None
 
-        self._fill_drafts(run)
+        self._fill_drafts_from_project()
         self._fill_findings(run)
-        self._cases = legacy_rows(run.test_cases)
+        self._cases = legacy_rows(
+            self._project.test_cases if self._project else run.test_cases
+        )
         self.table.model().update_cases(self._cases)
         self.btn_save_csv.setEnabled(bool(self._cases))
         self.btn_save_xlsx.setEnabled(bool(self._cases))
@@ -822,12 +867,62 @@ class MainWindow(QMainWindow):
         self.log_line(message)
         self.statusBar().showMessage(message)
 
-    def _fill_drafts(self, run) -> None:
-        self.drafts.clear()
-        for case in run.test_cases:
-            top = QTreeWidgetItem(
-                [case.title, f"{case.review_status.value}, revision {case.revision}"]
+    def _absorb_run(self, run) -> None:
+        """Keep the result as a project so it can be reviewed and saved."""
+        if self._project is None:
+            self._project = project_from_run(
+                run,
+                self._last_requirements,
+                self._last_documents,
+                name=(self._spec_paths[0].stem if self._spec_paths else "project"),
             )
+        else:
+            add_run(self._project, run, self._last_requirements)
+        self.review.show_case(self._project, None)
+
+    def _on_draft_selected(self, current, _previous) -> None:
+        while current is not None and current.parent() is not None:
+            current = current.parent()
+        case_id = current.data(0, Qt.UserRole) if current is not None else None
+        self.review.show_case(self._project, case_id)
+
+    def _on_review_changed(self, case_id: str) -> None:
+        if self._project is None:
+            return
+        self._fill_drafts_from_project()
+        self._fill_summary()
+        self._select_case(case_id)
+        counts = self._project.count_by_status()
+        self.statusBar().showMessage(
+            ", ".join(
+                f"{STATUS_TEXT.get(status, status.value)}: {counts[status.value]}"
+                for status in ReviewStatus
+                if counts[status.value]
+            )
+        )
+
+    def _select_case(self, case_id: str) -> None:
+        for index in range(self.drafts.topLevelItemCount()):
+            item = self.drafts.topLevelItem(index)
+            if item.data(0, Qt.UserRole) == case_id:
+                self.drafts.setCurrentItem(item)
+                return
+
+    def _fill_drafts_from_project(self) -> None:
+        if self._project is None:
+            return
+        self._render_drafts(self._project.test_cases)
+        self._cases = legacy_rows(self._project.test_cases)
+        self.table.model().update_cases(self._cases)
+
+    def _render_drafts(self, cases) -> None:
+        self.drafts.clear()
+        for case in cases:
+            status = STATUS_TEXT.get(case.review_status, case.review_status.value)
+            if case.needs_recheck:
+                status += ", review again"
+            top = QTreeWidgetItem([case.title, f"{status}, revision {case.revision}"])
+            top.setData(0, Qt.UserRole, case.case_id)
             top.addChild(QTreeWidgetItem([f"Objective: {case.objective}", ""]))
             top.addChild(
                 QTreeWidgetItem(
@@ -864,12 +959,27 @@ class MainWindow(QMainWindow):
                         )
                     group.addChild(node)
                 top.addChild(group)
+            for finding in case.accepted_findings:
+                top.addChild(
+                    QTreeWidgetItem(
+                        [f"Accepted: {finding.code} - {finding.justification}", ""]
+                    )
+                )
             if case.open_questions:
                 group = QTreeWidgetItem(
                     [f"Open questions ({len(case.open_questions)})", ""]
                 )
                 for question in case.open_questions:
-                    node = QTreeWidgetItem([question.question, question.origin.value])
+                    label = question.question
+                    if question.resolved:
+                        label = f"[answered] {label}"
+                    node = QTreeWidgetItem([label, question.origin.value])
+                    if question.resolved:
+                        node.addChild(
+                            QTreeWidgetItem(
+                                [f"Answer: {question.answer}", question.resolved_by or ""]
+                            )
+                        )
                     if question.suggestion:
                         node.addChild(
                             QTreeWidgetItem(
@@ -884,7 +994,7 @@ class MainWindow(QMainWindow):
                 top.addChild(group)
             self.drafts.addTopLevelItem(top)
         self.drafts.expandToDepth(0)
-        self.tabs.setTabText(0, f"Test drafts ({len(run.test_cases)})")
+        self.tabs.setTabText(0, f"Test drafts ({len(cases)})")
 
     def _fill_findings(self, run) -> None:
         def escape(text: str) -> str:
@@ -1015,6 +1125,113 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Export finished", f"Written to\n{written}")
 
     # =================================================================
+    # projects
+    # =================================================================
+    def open_project(self, path: Path | str | None = None) -> bool:
+        """Load a saved project: sources, drafts, findings and decisions."""
+        if path is None:
+            name, _ = QFileDialog.getOpenFileName(
+                self,
+                "Open project",
+                filter=f"Spec2Test project (*{PROJECT_SUFFIX});;All files (*)",
+            )
+            if not name:
+                return False
+            path = name
+
+        store = ProjectStore(path)
+        try:
+            project = store.load()
+        except ProjectFileError as exc:
+            self.log_line(f"Project could not be opened: {exc}")
+            QMessageBox.critical(self, "Project could not be opened", str(exc))
+            return False
+        try:
+            store.acquire_lock()
+        except ProjectLocked as exc:
+            self.log_line(str(exc))
+            QMessageBox.warning(self, "Project is open elsewhere", str(exc))
+            return False
+
+        self._release_project()
+        self._project = project
+        self._project_store = store
+        self._last_requirements = list(project.requirements)
+        self._last_documents = list(project.documents)
+        self._run = project.runs[-1] if project.runs else None
+
+        self.show_requirements(project.requirements)
+        self._fill_drafts_from_project()
+        if self._run is not None:
+            self._fill_findings(self._run)
+        self._fill_summary()
+        self.btn_save_csv.setEnabled(bool(self._cases))
+        self.btn_save_xlsx.setEnabled(bool(self._cases))
+        self.review.show_case(project, None)
+
+        counts = project.count_by_status()
+        summary = ", ".join(
+            f"{STATUS_TEXT.get(status, status.value)}: {counts[status.value]}"
+            for status in ReviewStatus
+            if counts[status.value]
+        )
+        message = (
+            f"Project '{project.name}' opened: {len(project.test_cases)} draft(s)"
+            + (f" ({summary})" if summary else "")
+        )
+        self.log_line(message)
+        self.statusBar().showMessage(message)
+        self.setWindowTitle(f"Spec2Test - {project.name}")
+        return True
+
+    def save_project(self) -> bool:
+        if self._project is None:
+            self.log_line("There is nothing to save yet; generate drafts first.")
+            return False
+        if self._project_store is None:
+            return self.save_project_as()
+        return self._write_project(self._project_store)
+
+    def save_project_as(self) -> bool:
+        if self._project is None:
+            self.log_line("There is nothing to save yet; generate drafts first.")
+            return False
+        name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save project",
+            f"{self._project.name}{PROJECT_SUFFIX}",
+            filter=f"Spec2Test project (*{PROJECT_SUFFIX});;All files (*)",
+        )
+        if not name:
+            return False
+        store = ProjectStore(name)
+        try:
+            store.acquire_lock()
+        except ProjectLocked as exc:
+            QMessageBox.warning(self, "Project is open elsewhere", str(exc))
+            return False
+        self._release_project()
+        self._project_store = store
+        return self._write_project(store)
+
+    def _write_project(self, store: ProjectStore) -> bool:
+        try:
+            path = store.save(self._project)
+        except OSError as exc:
+            self.log_line(f"Project could not be saved: {exc}")
+            QMessageBox.critical(self, "Save failed", str(exc))
+            return False
+        self.log_line(f"Project saved to {path}")
+        self.statusBar().showMessage(f"Project saved to {path}")
+        self.setWindowTitle(f"Spec2Test - {self._project.name}")
+        return True
+
+    def _release_project(self) -> None:
+        if self._project_store is not None:
+            self._project_store.release_lock()
+            self._project_store = None
+
+    # =================================================================
     # shutdown
     # =================================================================
     def closeEvent(self, event):  # noqa: N802 - Qt naming
@@ -1024,6 +1241,7 @@ class MainWindow(QMainWindow):
         when the user chooses it in the File menu.
         """
         self._closing = True
+        self._release_project()
         if self._task is not None:
             self._task.cancel()
         self._threadpool.waitForDone(2000)

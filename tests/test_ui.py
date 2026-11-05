@@ -16,6 +16,7 @@ import yaml
 pytest.importorskip("PySide6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
 from spec2test.adapters.fake.model import RuleBasedFakeModel, ScriptedModel  # noqa: E402
@@ -429,7 +430,8 @@ def test_drafts_requirements_and_sources_are_shown(window, fake_model, spec_a):
     assert any(label.startswith("Requirements:") for label in labels)
     assert any(label.startswith("Source:") for label in labels)
     assert any(label.startswith("Steps (") for label in labels)
-    assert first.text(1).startswith("draft"), "a draft never starts as approved"
+    assert first.text(1).startswith("Draft"), "a draft never starts as approved"
+    assert first.data(0, Qt.UserRole), "the tree item must carry its case id"
 
     assert window.btn_save_csv.isEnabled()
     assert window.table.model().rowCount() == 10

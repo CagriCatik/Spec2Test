@@ -77,6 +77,7 @@ class _DraftSignals(QObject):
     progress = Signal(int)          # 0-100 %; "finished", not "successful"
     message = Signal(str)
     requirements = Signal(object)   # list[Requirement], before generation starts
+    documents = Signal(object)      # list[SourceDocument], the originals
     finished = Signal(object)       # GenerationRun
     error = Signal(str)
 
@@ -129,9 +130,11 @@ class DraftTask(QRunnable):
             self.signals.error.emit(f"Configuration error: {exc}")
             return
 
-        requirements = self._import()
-        if requirements is None:
+        imported = self._import()
+        if imported is None:
             return
+        requirements, documents = imported
+        self.signals.documents.emit(documents)
         self.signals.requirements.emit(requirements)
 
         gen_settings = generation_settings_from_config(self.cfg)
@@ -191,6 +194,7 @@ class DraftTask(QRunnable):
             return None
 
         requirements = []
+        documents = []
         for result in results:
             document = result.document
             self.signals.message.emit(
@@ -203,13 +207,14 @@ class DraftTask(QRunnable):
             for issue in result.issues:
                 self.signals.message.emit(str(issue))
             requirements.extend(result.requirements)
+            documents.append(document)
 
         if not requirements:
             self.signals.error.emit(
                 "No requirement could be captured from the selected document(s)."
             )
             return None
-        return requirements
+        return requirements, documents
 
 
 __all__ = ["DraftTask", "ModelListTask"]

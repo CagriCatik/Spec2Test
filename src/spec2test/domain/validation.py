@@ -354,9 +354,28 @@ def may_approve(
     *,
     open_questions: Sequence[OpenQuestion] = (),
 ) -> tuple[bool, ValidationReport]:
-    """Approval gate. Unresolved criteria block approval."""
+    """Approval gate. Unresolved criteria block approval.
+
+    A question that a reviewer has answered no longer blocks: it stays on
+    record with its answer, but it is cleared.
+    """
     report = validate_test_case(case, requirements)
-    questions = list(open_questions) + list(case.open_questions)
+    accepted = case.accepted_keys
+    if accepted:
+        # an accepted clarification no longer blocks; it stays in the record
+        report.issues = [
+            issue
+            for issue in report.issues
+            if issue.severity is Severity.ERROR
+            or (issue.code, issue.path) not in accepted
+        ]
+    seen: set[str] = set()
+    questions = []
+    for question in (*open_questions, *case.open_questions):
+        if question.resolved or question.question_id in seen:
+            continue
+        seen.add(question.question_id)
+        questions.append(question)
     if questions:
         report.add(
             "C_OPEN_QUESTIONS",

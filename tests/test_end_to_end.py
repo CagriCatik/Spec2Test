@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from spec2test.adapters.documents import DEFAULT_IMPORTERS
 from spec2test.adapters.fake.model import RuleBasedFakeModel
 from spec2test.adapters.persistence import JsonRunStore, run_to_dict
@@ -167,3 +169,199 @@ def test_the_cli_refuses_an_unknown_document_format(tmp_path, capsys):
     code = main(["run", "--spec", str(bad), "--mode", "fake"])
     assert code == 1
     assert "no importer" in capsys.readouterr().out
+
+
+# =====================================================================
+# AP 5: the full review round trip
+# =====================================================================
+def test_generate_save_close_open_edit_clarify_approve_reopen(spec_a, tmp_path):
+    """The acceptance test for the review workflow.
+
+    generate -> save -> close -> open -> edit -> clarify -> approve -> reopen
+    """
+    from spec2test.adapters.persistence.project_store import ProjectStore
+    from spec2test.application.review import (
+        ApprovalBlocked,
+        CaseEdit,
+        accept_finding,
+        approval_report,
+        approve_case,
+        edit_case,
+        project_from_run,
+        resolve_question,
+        revisions_of,
+    )
+    from spec2test.domain.models import ReviewStatus
+
+    # --- generate ------------------------------------------------------
+    results = import_documents([spec_a], DEFAULT_IMPORTERS)
+    requirements = [req for result in results for req in result.requirements]
+    documents = [result.document for result in results]
+    run = generate_drafts(requirements, RuleBasedFakeModel())
+    assert run.status is RunStatus.COMPLETED
+
+    project = project_from_run(run, requirements, documents, name="RAS review")
+    path = tmp_path / "ras.s2t.json"
+
+    # --- save and close -------------------------------------------------
+    with ProjectStore(path) as store:
+        store.save(project)
+    assert ProjectStore(path).locked_by_other is False, "the lock is released"
+    del project
+
+    # --- open -----------------------------------------------------------
+    opened = ProjectStore(path).load()
+    assert len(opened.documents) == 1 and opened.documents[0].text
+    assert len(opened.requirements) == 10
+    assert len(opened.test_cases) == 10
+    assert all(c.review_status is ReviewStatus.DRAFT for c in opened.test_cases)
+
+    # a draft that still carries an open question cannot be approved
+    with_question = next(c for c in opened.test_cases if c.unresolved_questions)
+    with pytest.raises(ApprovalBlocked):
+        approve_case(opened, with_question.case_id)
+
+    # --- edit -----------------------------------------------------------
+    edited = edit_case(
+        opened,
+        with_question.case_id,
+        CaseEdit(title="Reviewed: " + with_question.title),
+        by="anna",
+        note="title sharpened",
+    )
+    assert edited.revision == 2
+
+    # --- clarify ---------------------------------------------------------
+    question = edited.unresolved_questions[0]
+    resolve_question(
+        opened,
+        edited.case_id,
+        question.question_id,
+        "Limit confirmed as 10 deg by the system owner",
+        by="anna",
+    )
+
+    # --- accept the remaining findings with a reason ---------------------
+    allowed, report = approval_report(opened, edited.case_id)
+    assert allowed is False, "a structural finding still blocks"
+    for issue in list(report.issues):
+        accept_finding(
+            opened,
+            edited.case_id,
+            issue.code,
+            issue.path,
+            "covered by the clarification from the system owner",
+            by="anna",
+        )
+
+    # --- approve ----------------------------------------------------------
+    approved = approve_case(opened, edited.case_id, by="anna", note="checked")
+    assert approved.review_status is ReviewStatus.APPROVED
+    assert approved.revision == 2
+
+    with ProjectStore(path) as store:
+        store.save(opened)
+
+    # --- reopen -----------------------------------------------------------
+    again = ProjectStore(path).load()
+    final = again.case(approved.case_id)
+    assert final.review_status is ReviewStatus.APPROVED
+    assert final.revision == 2
+    assert final.title.startswith("Reviewed: ")
+    stored_question = final.open_questions[0]
+    assert stored_question.resolved is True
+    assert stored_question.answer.startswith("Limit confirmed")
+    assert stored_question.resolved_by == "anna"
+
+    # the earlier revision and the whole decision trail are still there
+    assert [c.revision for c in revisions_of(again, final.case_id)] == [1, 2]
+    actions = [e.action.value for e in again.history_of(final.case_id)]
+    assert actions[0] == "created"
+    assert actions[-1] == "approved"
+    assert "edited" in actions and "question_resolved" in actions
+    # the reason for every accepted finding survives
+    assert final.accepted_findings
+    assert all(f.justification and f.by == "anna" for f in final.accepted_findings)
+    assert again.count_by_status()["approved"] == 1
+    assert again.count_by_status()["draft"] == 9
+    assert again.rework_statistics()["edits"] == 1
+
+
+def test_a_source_change_after_approval_is_noticed(spec_a, tmp_path):
+    from spec2test.adapters.persistence.project_store import ProjectStore
+    from spec2test.application.review import (
+        apply_requirement_changes,
+        approve_case,
+        project_from_run,
+    )
+    from spec2test.domain.models import ReviewStatus
+    from dataclasses import replace
+
+    results = import_documents([spec_a], DEFAULT_IMPORTERS)
+    requirements = [req for result in results for req in result.requirements]
+    run = generate_drafts(requirements, RuleBasedFakeModel())
+    project = project_from_run(
+        run, requirements, [r.document for r in results], name="demo"
+    )
+
+    clean = next(c for c in project.test_cases if not c.unresolved_questions)
+    approve_case(project, clean.case_id)
+
+    # the specification is edited and imported again
+    changed = [
+        replace(req, text=req.text + " The limit is now 5 deg.")
+        if req.requirement_id in clean.requirement_ids
+        else req
+        for req in requirements
+    ]
+    touched = apply_requirement_changes(project, changed)
+
+    assert clean.case_id in [c.case_id for c in touched]
+    after = project.case(clean.case_id)
+    assert after.needs_recheck is True
+    assert after.review_status is ReviewStatus.DRAFT, "the approval is withdrawn"
+
+    path = tmp_path / "demo.s2t.json"
+    ProjectStore(path).save(project)
+    assert ProjectStore(path).load().case(clean.case_id).needs_recheck is True
+
+
+def test_a_partial_run_can_still_be_saved_and_reopened(spec_a, tmp_path):
+    """Partial failures must not destroy the successful results."""
+    from spec2test.adapters.fake.model import ScriptedModel
+    from spec2test.adapters.persistence.project_store import ProjectStore
+    from spec2test.application.contracts import SCHEMA_VERSION
+    from spec2test.application.review import project_from_run
+
+    results = import_documents([spec_a], DEFAULT_IMPORTERS)
+    requirements = [req for result in results for req in result.requirements][:2]
+    good = json.dumps(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "test_cases": [
+                {
+                    "title": "ok",
+                    "objective": "o",
+                    "requirement_refs": [requirements[0].external_id],
+                    "steps": [
+                        {"order": 1, "action": "a", "expectations": ["0.2 deg"]}
+                    ],
+                }
+            ],
+        }
+    )
+    run = generate_drafts(
+        requirements, ScriptedModel([good, "broken", "broken", "broken"])
+    )
+    assert run.status is RunStatus.PARTIAL
+
+    project = project_from_run(
+        run, requirements, [r.document for r in results], name="partial"
+    )
+    path = tmp_path / "partial.s2t.json"
+    ProjectStore(path).save(project)
+    reopened = ProjectStore(path).load()
+
+    assert len(reopened.test_cases) == 1, "the successful draft survives"
+    assert reopened.runs[0].status is RunStatus.PARTIAL
+    assert reopened.runs[0].rejected_units, "the failure stays visible"

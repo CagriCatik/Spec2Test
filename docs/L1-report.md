@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  532 bestanden, 4 übersprungen (mit scikit-learn)
+pytest -q  →  628 bestanden, 4 übersprungen (mit scikit-learn)
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -545,6 +545,65 @@ weiterhin bewusst auf `fake` zurück, damit der Offline-Beispiellauf ohne
 Vorbereitung funktioniert.
 
 Teststand: **532 bestanden, 4 übersprungen** (mit scikit-learn).
+
+## 14 AP 5: Review-Ablauf und Projekte
+
+In der vom Reviewer vorgegebenen Reihenfolge umgesetzt.
+
+**1 Projekt speichern und wieder öffnen.** `Project` bündelt Originaldokumente,
+Anforderungen, aktuelle Entwürfe, alle früheren Revisionen, die Läufe und die
+Review-Historie. `ProjectStore` schreibt eine versionierte Datei
+(`project_format: "1"`, Endung `*.s2t.json`) über eine eindeutige temporäre
+Datei mit `fsync` und atomarem Ersetzen. Beschädigte Dateien werden mit einer
+verständlichen Meldung abgelehnt, die das betroffene Feld nennt – geprüft für
+ungültiges JSON, fehlende Formatmarkierung, unbekannte Version, falschen
+Feldtyp und unbekannten Enum-Wert. Eine Sperrdatei markiert das Projekt als
+geöffnet; ein zweiter Schreiber wird gemeldet statt still zu gewinnen.
+
+**2 Entwürfe bearbeiten.** Jede gespeicherte Änderung erzeugt eine neue
+Revision; die vorherige bleibt vollständig erhalten und bleibt abrufbar. Eine
+bestehende Freigabe gilt nicht für die neue Revision. Schritte werden in einem
+schlichten Textformat bearbeitet (`1. Aktion` / `   - Erwartung`), das
+eigenständig getestet ist und beim Parsen neu nummeriert, damit ein Einschub
+keine Handarbeit erfordert.
+
+**3 Offene Fragen bearbeiten.** Eine Frage wird mit Antwort, Bearbeiter und
+Zeitpunkt als geklärt markiert, nie gelöscht. Dabei fiel auf, dass
+`may_approve` auch bereits geklärte Fragen mitzählte – behoben.
+
+**4 Freigeben oder ablehnen.** Vor der Freigabe läuft die deterministische
+Validierung erneut für genau diese Revision. Entscheidungen werden mit
+Zeitpunkt, Bearbeiter, Revision und Begründung in der Historie geführt; eine
+Ablehnung verlangt einen Grund.
+
+Dabei zeigte der Abnahmetest eine Lücke: ein Befund wie
+`C_NO_MEASURABLE_CRITERION` blockierte die Freigabe **dauerhaft**, weil der
+Tester ihn nirgends als geklärt markieren konnte. Neu ist deshalb
+`accept_finding`: eine Klärungsmeldung kann mit ausdrücklicher Begründung
+angenommen werden, ein Fehler dagegen nie – gegen einen strukturell kaputten
+Entwurf hilft keine Begründung. Eine Bearbeitung löscht frühere Annahmen,
+damit eine neue Revision erneut beurteilt wird.
+
+**5 Durchgängiger Abnahmetest.** generieren → speichern → schließen → öffnen →
+bearbeiten → Frage klären → Befunde begründet annehmen → freigeben → erneut
+öffnen. Geprüft wird dabei, dass Status, Revision, Antwort samt Bearbeiter,
+frühere Revision und die vollständige Entscheidungskette den Neustart
+überleben. Zwei weitere Abnahmetests decken die Quelländerung nach Freigabe
+und das Speichern eines teilweise fehlgeschlagenen Laufs ab.
+
+**Oberfläche.** Der Reiter „Test drafts" ist geteilt: oben der Baum, unten das
+Review-Panel mit blockierenden Befunden, offenen Fragen und den Aktionen
+Bearbeiten, Klärung anfordern, Ablehnen, Wiedereröffnen und Freigeben. Die
+Freigabeschaltfläche ist nur aktiv, wenn die Validierung sie zulässt. Das
+Dateimenü hat Projekt öffnen, speichern und speichern unter; beim Schließen
+wird die Sperre freigegeben.
+
+**Messgröße für den späteren RAG-Vergleich.** Auf Anregung des Reviewers führt
+`Project.rework_statistics()` neben Freigaben auch Bearbeitungen je Fall,
+Ablehnungen, die Revision zum Zeitpunkt der Freigabe und die Kategorien der
+Beanstandungen – also Fehlerart und Nachbearbeitungsaufwand.
+
+Teststand: **628 bestanden, 4 übersprungen**.
 
 ## 9 Commits
 

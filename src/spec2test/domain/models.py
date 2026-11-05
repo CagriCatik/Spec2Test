@@ -176,11 +176,51 @@ class TestStep:
 
 @dataclass(frozen=True)
 class OpenQuestion:
+    """A question that blocks approval until a reviewer clears it.
+
+    A cleared question is marked, never deleted: the answer and the reason are
+    part of the record.
+    """
+
     question_id: str
     question: str
     requirement_ids: tuple[str, ...] = ()
     origin: QuestionOrigin = QuestionOrigin.MODEL
     suggestion: str | None = None  # explicitly marked proposal, never a spec
+    resolved: bool = False
+    answer: str | None = None
+    resolved_by: str | None = None
+    resolved_at: str | None = None
+
+    def resolve(self, answer: str, *, by: str, at: str) -> "OpenQuestion":
+        if not answer.strip():
+            raise ValueError("a question is cleared with an answer, not with silence")
+        return replace(
+            self, resolved=True, answer=answer.strip(), resolved_by=by, resolved_at=at
+        )
+
+    def reopen(self) -> "OpenQuestion":
+        return replace(self, resolved=False, resolved_by=None, resolved_at=None)
+
+
+@dataclass(frozen=True)
+class AcceptedFinding:
+    """A clarification finding a reviewer has deliberately accepted.
+
+    Errors can never be accepted. A clarification can: the reason why it is
+    acceptable - a clarification mail, a decision, a known deviation - is part
+    of the record, so the approval stays explainable.
+    """
+
+    code: str
+    path: str
+    justification: str
+    by: str
+    at: str
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.code, self.path)
 
 
 @dataclass(frozen=True)
@@ -210,6 +250,8 @@ class TestCase:
     revision: int = 1
     source_spans: tuple[SourceSpan, ...] = ()
     legacy_payload: dict | None = None
+    #: clarification findings the reviewer accepted, with their reason
+    accepted_findings: tuple[AcceptedFinding, ...] = ()
     #: set when the requirements behind this draft changed after it was written
     needs_recheck: bool = False
     #: free-text note of the last review decision
@@ -219,13 +261,26 @@ class TestCase:
         return replace(self, review_status=status)
 
     def next_revision(self, **changes) -> "TestCase":
-        """Any edit produces a new revision and drops a previous approval."""
+        """Any edit produces a new revision and drops a previous approval.
+
+        Accepted findings do not carry over: the new text has to be judged
+        again, so an acceptance can never silently cover a new defect.
+        """
         return replace(
             self,
             revision=self.revision + 1,
             review_status=ReviewStatus.DRAFT,
+            accepted_findings=(),
             **changes,
         )
+
+    @property
+    def accepted_keys(self) -> set[tuple[str, str]]:
+        return {finding.key for finding in self.accepted_findings}
+
+    @property
+    def unresolved_questions(self) -> tuple["OpenQuestion", ...]:
+        return tuple(q for q in self.open_questions if not q.resolved)
 
     def all_expectations(self) -> list[str]:
         out: list[str] = []
@@ -392,9 +447,12 @@ class ReviewEvent:
     case_id: str
     revision: int
     at: str
+    by: str | None = None
     note: str | None = None
     status_before: ReviewStatus | None = None
     status_after: ReviewStatus | None = None
+    #: why a draft was sent back, for later comparison of generation settings
+    categories: tuple[str, ...] = ()
 
 
 @dataclass
@@ -450,6 +508,46 @@ class Project:
     @property
     def cases_needing_recheck(self) -> list[TestCase]:
         return [c for c in self.test_cases if c.needs_recheck]
+
+    def rework_statistics(self) -> dict[str, object]:
+        """How much manual work the drafts needed.
+
+        Recorded so two model or retrieval configurations can be compared on
+        more than the approval rate: how often a draft was edited before it
+        was accepted, and what reviewers objected to.
+        """
+        edits = [e for e in self.history if e.action is ReviewAction.EDITED]
+        rejections = [e for e in self.history if e.action is ReviewAction.REJECTED]
+        categories: dict[str, int] = {}
+        for event in self.history:
+            for category in event.categories:
+                categories[category] = categories.get(category, 0) + 1
+        approved = self.approved_cases
+        revisions_at_approval = [case.revision for case in approved]
+        return {
+            "cases": len(self.test_cases),
+            "approved": len(approved),
+            "rejected": sum(
+                1 for c in self.test_cases if c.review_status is ReviewStatus.REJECTED
+            ),
+            "edits": len(edits),
+            "rejections": len(rejections),
+            "edits_per_case": (
+                round(len(edits) / len(self.test_cases), 2) if self.test_cases else 0
+            ),
+            "mean_revision_at_approval": (
+                round(sum(revisions_at_approval) / len(revisions_at_approval), 2)
+                if revisions_at_approval
+                else 0
+            ),
+            "finding_categories": categories,
+            "open_questions_resolved": sum(
+                1
+                for case in self.test_cases
+                for question in case.open_questions
+                if question.resolved
+            ),
+        }
 
     def replace_case(self, case: TestCase) -> None:
         """Replace a case in place, keeping the previous one as a revision."""

@@ -248,7 +248,22 @@ pip install -e ".[dev]"     # plus pytest
    was captured, with source positions), **Findings** (run report, open
    questions, rejected and unprocessed requirements), **Export table** and
    **Log**.
-6. Export the drafts as `.csv` or `.xlsx`.
+6. Review a draft: select it in **Test drafts**. The panel below shows what
+   blocks approval and the open questions. Answer a question, accept a
+   clarification finding with a reason, edit the draft, or decide: **Approve**,
+   **Reject**, **Needs clarification**, **Reopen**.
+7. Save the work with *File > Save project*. A project file (`*.s2t.json`)
+   keeps the original documents, the requirements, every revision of every
+   draft, the findings, the answered questions and the decision history.
+   *File > Open project* restores all of it.
+8. Export the drafts as `.csv` or `.xlsx`.
+
+Rules the review follows: an edit always creates a new revision and an earlier
+approval does not carry over; approval re-runs the validation for that exact
+revision; a question is marked as answered, never deleted; an error can never
+be accepted away, only a clarification can, and only with a stated reason; a
+changed requirement marks the affected drafts for a fresh review and withdraws
+their approval.
 
 `config.yml` is read when the window opens and is never written automatically.
 Changes in the window apply to the current session; *File > Write settings to

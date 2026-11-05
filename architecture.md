@@ -23,6 +23,7 @@ compatibility modules.
 | - | - |
 | `src/spec2test/ui/main_window.py` | the window: settings panel and result views |
 | `src/spec2test/ui/workers.py` | `DraftTask` (the run) and `ModelListTask` (`/api/tags`) |
+| `src/spec2test/ui/review_panel.py` | Review actions and the draft editor |
 | `src/spec2test/ui/models.py` | Qt table model over the flat export rows |
 | `src/spec2test/ui/app.py` | entry point, also the `spec2test-gui` script |
 | `src/spec2test/config.py` | configuration dataclasses shared by UI, worker and CLI |
@@ -104,6 +105,8 @@ HTTP response objects never cross a port boundary: the application sees
 | `prompts.py` | Versioned system/user messages and the repair message |
 | `assembly.py` | Contract objects → domain objects; ID assignment; legacy import |
 | `generate.py` | Generation, bounded repair, cancellation, run status |
+| `review.py` | Revisions, clarification, accepted findings, approval |
+| `step_text.py` | The text format a reviewer edits steps in |
 | `deadline.py` | Bounded runtime per job |
 | `legacy.py` | Deprecated bridge for the existing GUI (removed with L2) |
 
@@ -117,6 +120,7 @@ HTTP response objects never cross a port boundary: the application sees
 | `documents/pdf_import.py` | PDF pages via PyMuPDF; empty pages are reported |
 | `fake/model.py` | `ScriptedModel` and `RuleBasedFakeModel` for tests and CI |
 | `persistence/json_store.py` | Run storage with temp file and atomic replace |
+| `persistence/project_store.py` | Versioned project files, atomic write, one writer |
 
 ## Prompts
 
@@ -255,12 +259,35 @@ generation limits and portable relative paths. It never holds the API key.
 
 PyPDF2 was removed: PDF reading is unified on PyMuPDF.
 
+## Review workflow
+
+A `Project` holds the original documents, the captured requirements, the
+current drafts, every earlier revision, the runs and the review history. It is
+stored as one versioned file (`*.s2t.json`) through a unique temporary file and
+an atomic replace; a lock file marks it as open, so a second writer is reported
+instead of silently winning. A damaged file is refused with a message naming
+the field, never with a stack trace.
+
+The rules live in `application/review.py`:
+
+* every saved change creates a new revision, and the earlier one is kept;
+* an approval never carries over to a new revision;
+* approval re-runs the deterministic validation for that exact revision;
+* a question is cleared with an answer, never deleted - the answer, the
+  reviewer and the time stay on record;
+* a clarification finding can be accepted with a stated reason; an error never
+  can, because no justification makes a structurally broken draft usable;
+* an edit clears earlier acceptances, so a new revision is judged again;
+* changed or removed requirements mark the affected drafts for a fresh review
+  and withdraw their approval.
+
+`Project.rework_statistics()` records how much manual work the drafts needed -
+edits per case, rejections, the revision at which a draft was approved and what
+reviewers objected to. That is the measure for comparing two model or
+retrieval configurations later, beyond a plain approval rate.
+
 ## Deliberately not in this delivery
 
-Model-assisted requirement segmentation, editing and approval in the GUI,
-project persistence with revisions and reopening, Excel export with separate
-tables for steps and requirement links, coverage metrics, streaming, RAG,
-parallelisation, OCR and a GUI rebuild. See the work packages AP 4 to AP 6.
-
-The GUI shows drafts, sources, findings and open questions read-only. Approving
-or editing a draft, and reopening a stored project, are the next steps.
+Model-assisted requirement segmentation, Excel export with separate tables for
+steps and requirement links, coverage metrics, streaming, RAG, parallelisation
+and OCR. See the work packages AP 4 and AP 6.
