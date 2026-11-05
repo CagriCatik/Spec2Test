@@ -420,6 +420,26 @@ unprocessed requirements) and **Flat table** (which feeds the CSV/Excel
 buttons). **Cancel** stops new requests; a running request ends within its
 timeout.
 
+### Knowledge base and retrieval
+
+All documents of a folder can be indexed into a SQLite database with full-text
+search, so a requirement is generated with the sections that explain it -
+signal tables, interface descriptions, operating states:
+
+```bash
+spec2test run --spec requirements/09_autosar_can_fd_communication_and_uds_services.md \
+    --retrieval --knowledge requirements --index .spec2test/knowledge.db
+```
+
+`--knowledge` synchronises the index first: new and changed files are read
+again, deleted ones disappear. A file whose content did not change is still
+read again when the importer changed. Without `--knowledge` the existing index
+is reused as it is; `--no-retrieval` uses explicit references only.
+
+Every piece of context carries its origin - document, declared document ID,
+version, content hash, position and why it was chosen - it is stored with the
+run, and the **Context** tab of the window shows it.
+
 A credential or host misconfiguration stops the whole run after the first
 failure instead of repeating it for every requirement; the remaining
 requirements are listed as `NOT STARTED`.

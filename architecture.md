@@ -106,6 +106,8 @@ HTTP response objects never cross a port boundary: the application sees
 | `assembly.py` | Contract objects → domain objects; ID assignment; legacy import |
 | `generate.py` | Generation, bounded repair, cancellation, run status |
 | `review.py` | Revisions, clarification, accepted findings, approval |
+| `knowledge.py` | Passages, their kind, and the searchable normalised text |
+| `indexing.py` | Keeping the index in step with the documents |
 | `step_text.py` | The text format a reviewer edits steps in |
 | `deadline.py` | Bounded runtime per job |
 | `legacy.py` | Deprecated bridge for the existing GUI (removed with L2) |
@@ -121,6 +123,7 @@ HTTP response objects never cross a port boundary: the application sees
 | `fake/model.py` | `ScriptedModel` and `RuleBasedFakeModel` for tests and CI |
 | `persistence/json_store.py` | Run storage with temp file and atomic replace |
 | `persistence/project_store.py` | Versioned project files, atomic write, one writer |
+| `knowledge/sqlite_index.py` | Knowledge index: SQLite with FTS5 full-text search |
 
 ## Prompts
 
@@ -274,10 +277,36 @@ no target, and which IDs are defined more than once. An ambiguous ID does not
 resolve. This is the deterministic first stage of retrieval - no search
 involved.
 
+## The knowledge base
+
+All documents are cut into **passages**. A captured requirement stays one
+passage; everything else is split along its headings and, when long, split
+again while keeping the heading and the position in the original document. The
+header block of a document is not indexed: its content is already stored as
+document metadata and would match every query.
+
+Each passage is stored twice: the **original text** unchanged, and a
+**normalised copy** for searching, in which LaTeX becomes plain text
+(`$50\text{ ms}$` → `50 ms`) and Markdown decoration is dropped. Underscores
+survive, because signal names like `BMS_Pack_U` are the most useful search
+terms this corpus has. A hit always points back to the original position.
+
+Every passage carries a **kind** - requirement, signal, interface,
+explanation or reference test - so the roles stay apart: an interface
+description may name a signal, but it never supplies a missing target value.
+
+`indexing.sync_index` compares the content hash **and** the parser version: a
+file that has not changed is still read again once the importer changed.
+Deleted files disappear from the index.
+
 ## Supporting context
 
-`application/context.py` turns resolved references into context for one
-generation unit: only the requirements the unit cites directly, no recursion.
+`application/context.py` assembles the context for one generation unit.
+Explicit references come first - the document states them itself - and
+full-text hits from the knowledge index fill what is left, signal and
+interface sections before explanations. Duplicates are dropped and both share
+one budget. Only requirements the unit cites directly are followed; there is
+no recursion.
 Each item carries requirement ID, document, declared document ID and version,
 content hash and source span, and the selection is stored verbatim in
 `GenerationUnitResult.context` - IDs alone would not survive a later change to
