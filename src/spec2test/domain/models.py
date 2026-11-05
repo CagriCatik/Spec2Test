@@ -62,6 +62,27 @@ class UnitStatus(str, Enum):
     NOT_STARTED = "not_started"
 
 
+class ContextKind(str, Enum):
+    """What a piece of supporting context is.
+
+    Knowing the kind keeps the roles apart: an interface description may name
+    a signal, but it never supplies a missing target value.
+    """
+
+    REQUIREMENT = "requirement"
+    SIGNAL = "signal"
+    INTERFACE = "interface"
+    EXPLANATION = "explanation"
+    REFERENCE_TEST = "reference_test"
+
+
+class SelectionReason(str, Enum):
+    """Why a piece of context was chosen."""
+
+    EXPLICIT_REFERENCE = "explicit_reference"
+    FULL_TEXT_SEARCH = "full_text_search"
+
+
 class QuestionOrigin(str, Enum):
     MODEL = "model"
     VALIDATION = "validation"
@@ -317,10 +338,17 @@ class ContextItem:
     declared_document_id: str | None = None
     document_version: str | None = None
     content_hash: str | None = None
+    kind: ContextKind = ContextKind.REQUIREMENT
+    reason: SelectionReason = SelectionReason.EXPLICIT_REFERENCE
+    #: what the search matched on, when it came from the full-text index
+    matched_terms: tuple[str, ...] = ()
+    heading: str | None = None
 
     @property
     def label(self) -> str:
-        parts = [self.external_id or self.requirement_id]
+        parts = [self.external_id or self.requirement_id, self.kind.value]
+        if self.heading:
+            parts.append(self.heading)
         if self.document_filename:
             parts.append(self.document_filename)
         if self.declared_document_id:

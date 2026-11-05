@@ -70,6 +70,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-context", dest="context", action="store_false",
         help="generate without supporting context, for a comparison",
     )
+    run.add_argument(
+        "--retrieval", dest="retrieval", action="store_true", default=None,
+        help="also search the knowledge index for related sections",
+    )
+    run.add_argument(
+        "--no-retrieval", dest="retrieval", action="store_false",
+        help="use explicit references only",
+    )
+    run.add_argument(
+        "--index", type=Path, default=None,
+        help="knowledge index file (default: .spec2test/knowledge.db)",
+    )
+    run.add_argument(
+        "--knowledge", type=Path, default=None,
+        help="folder of documents to index before generating",
+    )
     run.add_argument("--max-repairs", type=int, default=None)
     run.add_argument("--group-size", type=int, default=None)
     run.add_argument("--job-timeout", type=float, default=None)
@@ -137,6 +153,8 @@ def _cmd_run(args) -> int:
         gen_settings.job_timeout_s = args.job_timeout
     if args.context is not None:
         gen_settings.use_reference_context = args.context
+    if args.retrieval is not None:
+        gen_settings.use_retrieval = args.retrieval
 
     ollama_settings = None
     if args.mode in (MODE_CLOUD, MODE_LOCAL):
@@ -201,6 +219,28 @@ def _cmd_run(args) -> int:
         )
 
     source = content_hash("\n".join(r.text for r in requirements))
+    knowledge = None
+    if gen_settings.use_retrieval:
+        from .adapters.knowledge import SqliteKnowledgeIndex
+        from .application.indexing import collect_documents, sync_index
+
+        index_path = args.index or (Path.cwd() / ".spec2test" / "knowledge.db")
+        knowledge = SqliteKnowledgeIndex(index_path)
+        folder = args.knowledge
+        if folder is not None:
+            report_sync = sync_index(
+                knowledge, collect_documents(folder), build_importers()
+            )
+            _out(f"knowledge index {index_path}: {report_sync.summary()}")
+            for document in report_sync.documents.values():
+                documents.setdefault(document.document_id, document)
+            known = {r.requirement_id for r in requirements}
+            requirements.extend(
+                r for r in report_sync.requirements if r.requirement_id not in known
+            )
+        else:
+            _out(f"knowledge index {index_path}: reused as it is")
+
     if gen_settings.use_reference_context:
         report = reference_report(requirements)
         cited = sum(len(v) for v in report.citations.values())
@@ -218,6 +258,7 @@ def _cmd_run(args) -> int:
             log=_out,
             documents=documents,
             catalogue=requirements,
+            knowledge=knowledge,
         )
     except OllamaError as exc:
         _out(f"generation aborted: {exc}")
@@ -251,9 +292,20 @@ def _cmd_run(args) -> int:
     if run.context_items:
         _out()
         _out("== supporting context sent ==")
-        for item in run.context_items:
-            _out(f"{item.external_id or item.requirement_id}  [{item.label}]")
-            _out(f"  cited by: {', '.join(item.cited_by)}")
+        for unit in run.units:
+            if not unit.context:
+                continue
+            _out(f"-- {unit.unit_id} [{', '.join(unit.requirement_ids)}]")
+            for item in unit.context:
+                _out(f"   {item.external_id or item.heading or item.requirement_id}")
+                _out(
+                    f"     kind={item.kind.value} reason={item.reason.value}"
+                    + (f" matched={', '.join(item.matched_terms[:4])}"
+                       if item.matched_terms else "")
+                )
+                _out(f"     source: {item.label}")
+                for span in item.spans:
+                    _out(f"     position: {span.label()}")
 
     _out()
     _out("== report ==")

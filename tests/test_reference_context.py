@@ -280,7 +280,7 @@ def test_a_differing_value_between_sources_is_reported():
 
     issues = detect_contradictions([under_test], [item])
 
-    assert [issue.code for issue in issues] == ["C_CONTRADICTORY_SOURCES"]
+    assert [issue.code for issue in issues] == ["C_POSSIBLE_VALUE_CONFLICT"]
     message = issues[0].message
     assert "ms" in message and "100" in message and "50" in message
     assert "SYS-REQ-0002" in message

@@ -34,6 +34,10 @@ Desktop.ini
 # Generated run data (the CLI and GUI write here by default)
 runs/
 
+# Knowledge index (rebuilt from the documents at any time)
+.spec2test/
+*.db
+
 # Exported/generated files
 #*.xlsx
 #*.csv

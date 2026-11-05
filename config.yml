@@ -58,6 +58,10 @@ generation:
   use_reference_context: true
   context_char_budget: 6000  # omitted references are reported, never shortened
   max_context_items: 5
+  # Full-text search over the knowledge index, on top of explicit references.
+  # Build the index with: spec2test run --retrieval --knowledge requirements
+  use_retrieval: false
+  max_search_items: 3
   job_timeout_s: 900         # bounded runtime per job
   # Legacy flat path only (core.generate_test_cases, for existing scripts).
   # The window no longer offers these; they do not affect a normal run.

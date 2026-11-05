@@ -31,7 +31,7 @@ from .context import (
     DEFAULT_CONTEXT_CHAR_BUDGET,
     DEFAULT_MAX_CONTEXT_ITEMS,
     ContextSelection,
-    build_reference_context,
+    build_context,
     detect_contradictions,
 )
 from .ingest import ReferenceReport, reference_report
@@ -57,6 +57,9 @@ class GenerationSettings:
     use_reference_context: bool = True
     context_char_budget: int = DEFAULT_CONTEXT_CHAR_BUDGET
     max_context_items: int = DEFAULT_MAX_CONTEXT_ITEMS
+    #: add full-text hits from the knowledge index on top of the references
+    use_retrieval: bool = False
+    max_search_items: int = 3
 
 
 @dataclass
@@ -155,6 +158,7 @@ def generate_drafts(
     should_cancel: CancelCheck | None = None,
     documents: Mapping[str, SourceDocument] | None = None,
     catalogue: Sequence[Requirement] | None = None,
+    knowledge=None,
 ) -> GenerationRun:
     """``catalogue`` is the full requirement set references are resolved in;
     it defaults to the requirements being generated for."""
@@ -214,7 +218,14 @@ def generate_drafts(
             break
 
         result = _process_unit(
-            unit, model, settings, deadline, log, references, documents or {}
+            unit,
+            model,
+            settings,
+            deadline,
+            log,
+            references,
+            documents or {},
+            knowledge if settings.use_retrieval else None,
         )
         run.units.append(result)
         if result.fatal_error:
@@ -262,7 +273,7 @@ def context_issues_of(result: GenerationUnitResult) -> list[ValidationIssue]:
             "C_UNRESOLVED_REFERENCE",
             "C_AMBIGUOUS_REFERENCE",
             "C_CONTEXT_OMITTED",
-            "C_CONTRADICTORY_SOURCES",
+            "C_POSSIBLE_VALUE_CONFLICT",
         }
     ]
 
@@ -296,6 +307,7 @@ def _process_unit(
     log: LogCallback | None,
     references: ReferenceReport | None = None,
     documents: Mapping[str, SourceDocument] | None = None,
+    knowledge=None,
 ) -> GenerationUnitResult:
     result = GenerationUnitResult(
         unit_id=unit.unit_id,
@@ -306,12 +318,14 @@ def _process_unit(
 
     selection = ContextSelection()
     if references is not None:
-        selection = build_reference_context(
+        selection = build_context(
             unit.requirements,
             references,
             documents=documents or {},
+            knowledge=knowledge,
             char_budget=settings.context_char_budget,
             max_items=settings.max_context_items,
+            max_search_items=settings.max_search_items,
         )
         # stored verbatim: the run stays explainable after the documents change
         result.context = selection.items
@@ -326,7 +340,9 @@ def _process_unit(
                 f"  {unit.unit_id}: {len(selection.items)} supporting context "
                 f"requirement(s): "
                 + ", ".join(
-                    item.external_id or item.requirement_id for item in selection.items
+                    f"{item.external_id or item.heading or item.requirement_id}"
+                    f" ({item.kind.value}, {item.reason.value})"
+                    for item in selection.items
                 ),
             )
 
