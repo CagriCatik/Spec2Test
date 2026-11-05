@@ -14,9 +14,7 @@ config.yml        – optional defaults (can be empty)
 from __future__ import annotations
 
 import sys
-import subprocess
 import time
-import requests
 import yaml
 from pathlib import Path
 from typing import Any, Final
@@ -51,9 +49,18 @@ from PySide6.QtWidgets import (
 # local imports – these modules must exist in the same directory
 from documentation import PARAMETER_DOC  # HTML help
 from core import save_csv, save_xlsx, summarise_cases  # exporters & analytics
+from spec2test.adapters.ollama import (  # model list via /api/tags
+    MODE_LOCAL,
+    OllamaChatClient,
+    OllamaError,
+    OllamaSettings,
+    list_models,
+)
 from workers import GeneratorTask  # background worker
 from qmodels import TestCaseTableModel  # table model wrapper
 from config_models import (
+    DEFAULT_MODEL_NAME,
+    DEFAULT_OLLAMA_URL,
     AppConfig,
     CacheConfig,
     GenerationConfig,
@@ -477,36 +484,27 @@ class MainWindow(QMainWindow):
 
     # --------------------------- model list ----------------------------------
     def _populate_models(self) -> None:
-        """Fill the model combo-box from REST first, then CLI, else default."""
-        models: list[str] = []
+        """Fill the model combo-box from /api/tags of the configured host.
 
-        # 1️⃣  REST endpoint  (Ollama ≥ 0.1.0)
+        No CLI fallback: a model list obtained from the local CLI reports local
+        aliases (``...-cloud``), which are not the names the cloud API expects.
+        The combo stays editable, so a manual name is always possible.
+        """
+        host = DEFAULT_OLLAMA_URL
+        mode = MODE_LOCAL
         try:
-            r = requests.get("http://localhost:11434/api/tags", timeout=3)
-            r.raise_for_status()
-            models = [m["name"] for m in r.json().get("models", [])]
-        except Exception:
-            pass  # server not running / very old version
+            settings = OllamaSettings(model="unused", mode=mode, host=host,
+                                      connect_timeout_s=3.0, read_timeout_s=5.0,
+                                      max_retries=0)
+            models = list_models(OllamaChatClient(settings))
+            self._log(f"🧠 {len(models)} model(s) reported by {host}/api/tags")
+        except OllamaError as exc:
+            models = []
+            self._log(f"⚠️ Model list unavailable ({exc}). Enter a model name manually.")
 
-        # 2️⃣  Plain CLI fallback (no --json flag)
         if not models:
-            try:
-                out = subprocess.check_output(
-                    ["ollama", "list"], text=True, stderr=subprocess.DEVNULL
-                )
-                for line in out.splitlines()[1:]:      # skip header row
-                    name = line.split()[0]
-                    if name and name not in models:
-                        models.append(name)
-            except Exception:
-                pass  # CLI not in PATH, etc.
-
-        # 3️⃣  Last-ditch default
-        if not models:
-            models.append("deepseek-r1:14b")
-
+            models = [DEFAULT_MODEL_NAME]
         self.model_name.addItems(models)
-
 
     # ----------------------- file selection -------------------------------
     def _select_pdf(self):
@@ -537,10 +535,17 @@ class MainWindow(QMainWindow):
         task = GeneratorTask(pdf=self._pdf_path, cfg=cfg)
         task.signals.progress.connect(self.pb.setValue)
         task.signals.message.connect(self._log)
+        task.signals.status.connect(self._on_status)
         task.signals.finished.connect(self._on_done)
         task.signals.error.connect(lambda e: QMessageBox.critical(self, "Error", e))
         self._threadpool.start(task)
         self.statusBar().showMessage("Generation running…")
+
+    def _on_status(self, status: dict) -> None:
+        """Remember the run status so the result is not reported as success."""
+        self._run_status = status
+        for line in status.get("report", []):
+            self._log(line)
 
     def _on_done(self, cases):
         QApplication.restoreOverrideCursor()
@@ -559,8 +564,19 @@ class MainWindow(QMainWindow):
         self.btn_save_xlsx.setEnabled(bool(cases))
         self._render_summary()
 
-        # build the log/status message
-        msg = f"✅ {len(cases)} cases generated."
+        # build the log/status message - a finished run is not a successful one
+        status = getattr(self, "_run_status", None) or {}
+        state = status.get("status", "unknown")
+        icon = {
+            "completed": "✅",
+            "partial": "⚠️",
+            "failed": "❌",
+            "cancelled": "⏹️",
+        }.get(state, "ℹ️")
+        msg = f"{icon} Run {state}: {len(cases)} case(s)."
+        rejected = status.get("rejected_blocks") or 0
+        if rejected:
+            msg += f" {rejected} block(s) rejected - see the log."
         if elapsed is not None:
             msg += f" ⏱️ Finished in {elapsed:.1f} s."
 

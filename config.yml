@@ -1,30 +1,58 @@
-cache:
-  directory: C:\Users\mccat\Desktop\TSG\cache
-  enabled: false
-  max_age_hours: 24
-  max_entries: 256
-generation:
-  batch_size: 5
-  cases_per_prompt: 20
-  combine_pages: 5
-  parallel_prompts: 2
+# Spec2Test configuration.
+# Paths are relative to the repository root so the file stays portable.
+# The cloud API key is NEVER stored here; it is read from $OLLAMA_API_KEY.
+
+cloud:
+  # explicit mode, no implicit switching: ollama_cloud | ollama_local
+  mode: ollama_cloud
+  # cloud host; for ollama_local the model.url below is used instead
+  host: https://ollama.com
+  connect_timeout_s: 10
+  read_timeout_s: 300
+  max_retries: 2
+
 model:
-  gpu_layers: null
-  http_timeout: null
-  main_gpu: null
-  max_tokens: 16000
-  name: gpt-oss:120b-cloud
-  num_gpu: null
-  num_thread: null
+  # cloud API name as reported by /api/tags - NOT the local alias
+  # (the local CLI/app alias for this model is "gpt-oss:120b-cloud")
+  name: gpt-oss:120b
+  # only used in ollama_local mode
+  url: http://localhost:11434
   temperature: 0.2
   top_k: 40
   top_p: 0.9
-  url: http://localhost:11434
+  max_tokens: 16000
+  # GPU settings apply to ollama_local only and are ignored for the cloud
+  gpu_layers: null
+  main_gpu: null
+  num_gpu: null
+  num_thread: null
   use_gpu: true
+
+generation:
+  # new pipeline (application.generate)
+  group_size: 1              # requirements per generation unit
+  max_cases_per_unit: 5      # resource ceiling, not a quota
+  max_repair_attempts: 2     # bounded repair, then visible rejection
+  input_char_budget: 12000   # oversized input is split visibly, never truncated
+  job_timeout_s: 900         # bounded runtime per job
+  # legacy GUI path (core.generate_test_cases)
+  batch_size: 5
+  cases_per_prompt: 20
+  combine_pages: 5
+
 paths:
-  pdf_path: C:\Users\mccat\Desktop\E-TSG\requirements\sw_req_spec_ras.pdf
-  prompt_path: C:\Users\mccat\Desktop\E-TSG\prompts\Prompt_Expert_Test_Architect.txt
-rag:
-  chunk_overlap: 0
+  # portable examples - replace with your own documents
+  pdf_path: requirements/sw_req_spec_ras.pdf
+  prompt_path: prompts/Prompt_Expert_Test_Architect.txt
+
+cache:
   enabled: false
+  # relative to the repository root; keep user caches out of version control
+  directory: cache
+  max_age_hours: 24
+  max_entries: 256
+
+rag:
+  enabled: false
+  chunk_overlap: 0
   top_k: 2

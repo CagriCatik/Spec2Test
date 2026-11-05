@@ -8,18 +8,19 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
-from PyPDF2 import PdfReader
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from config_models import AppConfig
 from core import AgentLocal, PromptCache, generate_test_cases, load_prompt_file
+from core import pdf_to_text_pages
 
 
 class _Signals(QObject):
     """Qt signals container so we can emit from the worker thread."""
 
-    progress = Signal(int)          # 0‑100 %
+    progress = Signal(int)          # 0‑100 % - "finished", not "successful"
     message = Signal(str)           # log lines
+    status = Signal(dict)           # run status before the result is delivered
     finished = Signal(list)         # list[dict] with test‑case objects
     error = Signal(str)
 
@@ -38,6 +39,11 @@ class GeneratorTask(QRunnable):
         self.pdf = Path(pdf)
         self.cfg = cfg
         self.signals = _Signals()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Stop starting new requests. A running request ends within its timeout."""
+        self._cancelled = True
 
     # ------------------------------------------------------------------
     # Qt entry‑point
@@ -45,12 +51,12 @@ class GeneratorTask(QRunnable):
     def run(self):
         try:
             self.signals.message.emit("👊 Parsing PDF…")
-            # Count pages in the PDF
+            # One PDF parser for the whole application (PyMuPDF via the adapter)
             try:
-                reader = PdfReader(str(self.pdf))
-                num_pages = len(reader.pages)
-            except Exception:
-                num_pages = "unknown"
+                num_pages: object = len(pdf_to_text_pages(str(self.pdf)))
+            except Exception as exc:
+                self.signals.error.emit(f"PDF could not be read: {exc}")
+                return
             self.signals.message.emit(f"📑 Parsed {num_pages} pages, starting generation…")
 
             # Build agent configuration
@@ -58,7 +64,13 @@ class GeneratorTask(QRunnable):
             model_cfg = cfg.model
             prompt_role = load_prompt_file(cfg.paths.prompt_path)
 
+            mode = (
+                self.cfg.get("mode")
+                or (self.cfg.get("cloud") or {}).get("mode")
+                or "ollama_local"
+            )
             agent = AgentLocal(
+                mode=mode,
                 model=model_cfg.name,
                 ollama_url=model_cfg.url,
                 temperature=model_cfg.temperature,
@@ -74,11 +86,16 @@ class GeneratorTask(QRunnable):
                 num_thread=model_cfg.num_thread,
             )
 
+            self.signals.message.emit(
+                f"🌐 mode={mode} endpoint={agent.settings.endpoint}"
+            )
             if agent.ensure_server():
-                self.signals.message.emit("🌐 Ollama endpoint reachable")
+                self.signals.message.emit("🌐 Endpoint reachable")
             else:
                 self.signals.message.emit(
-                    "⚠️ Ollama HTTP endpoint unavailable, CLI fallback may be used"
+                    "⚠️ Endpoint not reachable or credentials rejected. "
+                    "Generation will report the error; the local Ollama CLI is "
+                    "never started as a fallback."
                 )
 
             gen_cfg = cfg.generation
@@ -102,7 +119,7 @@ class GeneratorTask(QRunnable):
                         f"⚠️ Cache disabled due to error: {exc}"
                     )
 
-            cases: List[Dict] = generate_test_cases(
+            cases, run = generate_test_cases(
                 pdf_path=str(self.pdf),
                 agent=agent,
                 n_cases=gen_cfg.cases_per_prompt,
@@ -114,9 +131,19 @@ class GeneratorTask(QRunnable):
                 progress_cb=self.signals.progress.emit,
                 logger=self.signals.message.emit,
                 cache=cache,
+                should_cancel=lambda: self._cancelled,
+                return_run=True,
             )
 
-            # Finished
+            # The status says whether the run worked; 100 % only means it ended.
+            self.signals.status.emit(
+                {
+                    "status": run.status.value,
+                    "accepted_blocks": len(run.accepted_units),
+                    "rejected_blocks": len(run.rejected_units),
+                    "report": run.report_lines(),
+                }
+            )
             self.signals.finished.emit(cases)
         except Exception as exc:
             self.signals.error.emit(str(exc))

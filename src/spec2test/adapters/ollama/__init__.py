@@ -15,7 +15,13 @@ from .client import (
     RequestTimeoutError,
     TransientServerError,
 )
-from .models import ModelCapabilities, capabilities_for, check_model_choice, list_models
+from .models import (
+    ModelCapabilities,
+    capabilities_for,
+    check_model_choice,
+    is_local_cloud_alias,
+    list_models,
+)
 
 __all__ = [
     "API_KEY_ENV",
@@ -36,5 +42,6 @@ __all__ = [
     "TransientServerError",
     "capabilities_for",
     "check_model_choice",
+    "is_local_cloud_alias",
     "list_models",
 ]

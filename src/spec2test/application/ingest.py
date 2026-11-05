@@ -160,7 +160,25 @@ def extract_requirements(
         start = match.start()
         limits = [len(text)]
         if i + 1 < len(matches):
-            limits.append(matches[i + 1].start())
+            next_start = matches[i + 1].start()
+            limits.append(next_start)
+            # A requirement never reaches into the page on which the next
+            # requirement starts, so page headers of that page are not
+            # attributed to it as a source.
+            next_segment = next(
+                (
+                    seg
+                    for seg in segments
+                    if seg.char_start <= next_start < seg.char_end
+                ),
+                None,
+            )
+            if (
+                next_segment is not None
+                and next_segment.char_start > start
+                and next_segment.page is not None
+            ):
+                limits.append(next_segment.char_start)
         limits.extend(pos for pos in section_starts if pos > start)
         end = min(limits)
         anchored.append((start, end, match.group(1)))

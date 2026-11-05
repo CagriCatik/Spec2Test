@@ -28,16 +28,23 @@ _CLOUD_NOTE = (
     "mandatory."
 )
 _ALIAS_NOTE = (
-    "Name ends in ':cloud'. That is the local CLI/app alias. The cloud API "
-    "expects the name from /api/tags. The two are not mapped automatically."
+    "The name ends in ':cloud' or '-cloud', which is the local CLI/app alias. "
+    "The cloud API expects the name reported by /api/tags. The two are not "
+    "mapped automatically."
 )
+
+
+def is_local_cloud_alias(name: str) -> bool:
+    """Both ``gemma4:cloud`` and ``gpt-oss:120b-cloud`` are local aliases."""
+    lowered = name.strip().lower()
+    return lowered.endswith(":cloud") or lowered.endswith("-cloud")
 
 
 def capabilities_for(name: str, mode: str) -> ModelCapabilities:
     notes: list[str] = []
     if mode == MODE_CLOUD:
         notes.append(_CLOUD_NOTE)
-        if name.endswith(":cloud"):
+        if is_local_cloud_alias(name):
             notes.append(_ALIAS_NOTE)
     return ModelCapabilities(
         name=name,
@@ -62,6 +69,6 @@ def check_model_choice(name: str, available: list[str], mode: str) -> list[str]:
             f"({len(available)} available). Manual names are allowed, but the "
             "request may fail with 404."
         )
-        if mode == MODE_CLOUD and name.endswith(":cloud"):
+        if mode == MODE_CLOUD and is_local_cloud_alias(name):
             warnings.append(_ALIAS_NOTE)
     return warnings

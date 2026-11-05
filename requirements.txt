@@ -1,9 +1,8 @@
 # GUI and Qt threading
 PySide6==6.7.0
 
-# PDF parsing
-PyMuPDF==1.23.22        # fitz
-PyPDF2==3.0.1
+# PDF parsing - one parser for the whole application
+PyMuPDF==1.23.22        # imported as pymupdf (legacy name: fitz)
 
 # Data handling and file export
 pandas==2.2.2
@@ -15,7 +14,15 @@ requests==2.31.0
 # YAML config handling
 PyYAML==6.0.1
 
-# Retrieval / vectorisation
+# Strict, versioned JSON contracts for model answers.
+# Justification: Ollama Cloud offers no schema-enforced structured outputs, so
+# every answer must be validated locally. Pydantic gives declarative strict
+# models with "forbid extra fields" and precise error paths for the repair
+# prompt; hand-written validation of the same contract was both longer and
+# weaker at reporting where an answer went wrong.
+pydantic==2.7.1
+
+# Retrieval / vectorisation (optional: only needed for the legacy RAG option)
 scikit-learn==1.4.2
 
 # Tooling & tests
