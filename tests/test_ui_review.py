@@ -433,3 +433,53 @@ def test_a_second_run_merges_into_the_same_project(window, spec_a):
     ids = [c.case_id for c in window._project.test_cases]
     assert len(set(ids)) == len(ids), "merging produced duplicate IDs"
     assert len(window._project.runs) == 2
+
+
+# =====================================================================
+# the supporting context is visible
+# =====================================================================
+def test_the_context_tab_shows_what_was_sent(app, tmp_path, monkeypatch):
+    from spec2test.adapters.documents import DEFAULT_IMPORTERS
+    from spec2test.application.ingest import import_documents
+    from spec2test.ui.main_window import MainWindow
+
+    first = tmp_path / "a.md"
+    first.write_text(
+        "**Document ID:** DOC-A\n**Version:** 1.0\n\n"
+        "### Requirement: SYS-REQ-0001\n"
+        "The controller shall limit the current as in SYS-REQ-0002.\n",
+        encoding="utf-8",
+    )
+    second = tmp_path / "b.md"
+    second.write_text(
+        "**Document ID:** DOC-B\n**Version:** 4.2\n\n"
+        "### Requirement: SYS-REQ-0002\nThe current limit shall be 2.5 A.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(workers, "build_model", lambda *a, **k: RuleBasedFakeModel())
+
+    window = MainWindow(config_path=tmp_path / "config.yml")
+    window._threadpool = SynchronousPool()
+    window.model_name.setCurrentText("m:1b")
+    window._spec_paths = [first, second]
+    window.start_run()
+
+    labels = [
+        window.context.topLevelItem(i).text(0)
+        for i in range(window.context.topLevelItemCount())
+    ]
+    assert labels, "the context tab stayed empty"
+    assert "Context (" in window.tabs.tabText(4)
+
+    entry = None
+    for index in range(window.context.topLevelItemCount()):
+        unit = window.context.topLevelItem(index)
+        for child in range(unit.childCount()):
+            if unit.child(child).text(0) == "SYS-REQ-0002":
+                entry = unit.child(child)
+    assert entry is not None, "the referenced requirement is not shown"
+    assert "requirement" in entry.text(1) and "explicit_reference" in entry.text(1)
+    details = [entry.child(i).text(0) for i in range(entry.childCount())]
+    assert any("DOC-B" in d and "4.2" in d for d in details), "the origin is missing"
+    assert any(d.startswith("Position:") for d in details)
+    window.close()

@@ -433,6 +433,13 @@ class MainWindow(QMainWindow):
         table_layout.addWidget(self.table, 1)
         self.tabs.addTab(table_tab, "Export table")
 
+        # what was actually sent as supporting context, with its origin
+        self.context = QTreeWidget()
+        self.context.setHeaderLabels(["Supporting context", "Kind and reason"])
+        self.context.setColumnWidth(0, 560)
+        self.context.setAlternatingRowColors(True)
+        self.tabs.addTab(self.context, "Context")
+
         self.log = QTextEdit(readOnly=True)
         self.log.setObjectName("log")
         self.tabs.addTab(self.log, "Log")
@@ -845,6 +852,7 @@ class MainWindow(QMainWindow):
 
         self._fill_drafts_from_project()
         self._fill_findings(run)
+        self._fill_context(run)
         self._cases = legacy_rows(
             self._project.test_cases if self._project else run.test_cases
         )
@@ -1008,6 +1016,46 @@ class MainWindow(QMainWindow):
             self.drafts.addTopLevelItem(top)
         self.drafts.expandToDepth(0)
         self.tabs.setTabText(0, f"Test drafts ({len(cases)})")
+
+    def _fill_context(self, run) -> None:
+        """Everything that was sent alongside the requirement, and why."""
+        self.context.clear()
+        total = 0
+        for unit in run.units:
+            if not unit.context:
+                continue
+            top = QTreeWidgetItem(
+                [
+                    f"{unit.unit_id}: {', '.join(unit.requirement_ids)}",
+                    f"{len(unit.context)} item(s)",
+                ]
+            )
+            for item in unit.context:
+                total += 1
+                node = QTreeWidgetItem(
+                    [
+                        item.external_id or item.heading or item.requirement_id,
+                        f"{item.kind.value}, {item.reason.value}",
+                    ]
+                )
+                node.addChild(QTreeWidgetItem([f"Source: {item.label}", ""]))
+                if item.matched_terms:
+                    node.addChild(
+                        QTreeWidgetItem(
+                            [f"Matched: {', '.join(item.matched_terms)}", ""]
+                        )
+                    )
+                for span in item.spans:
+                    position = QTreeWidgetItem([f"Position: {span.label()}", ""])
+                    position.setToolTip(0, span.quote[:800])
+                    node.addChild(position)
+                text = QTreeWidgetItem([item.text.strip()[:600], ""])
+                text.setToolTip(0, item.text[:2000])
+                node.addChild(text)
+                top.addChild(node)
+            self.context.addTopLevelItem(top)
+        self.context.expandToDepth(0)
+        self.tabs.setTabText(4, f"Context ({total})" if total else "Context")
 
     def _fill_findings(self, run) -> None:
         def escape(text: str) -> str:
@@ -1181,6 +1229,7 @@ class MainWindow(QMainWindow):
         self._fill_drafts_from_project()
         if self._run is not None:
             self._fill_findings(self._run)
+            self._fill_context(self._run)
         self._fill_summary()
         self.btn_save_csv.setEnabled(bool(self._cases))
         self.btn_save_xlsx.setEnabled(bool(self._cases))
