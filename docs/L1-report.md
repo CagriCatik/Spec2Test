@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  639 bestanden, 4 übersprungen (mit scikit-learn)
+pytest -q  →  677 bestanden, 4 übersprungen (mit scikit-learn)
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -629,6 +629,63 @@ auf Hinterachslenkung geschrieben und würde bei Batteriethemen in die Irre
 führen. Beide Dateien bleiben erhalten.
 
 Teststand: **639 bestanden, 4 übersprungen**.
+
+## 16 Review von `96e78c4`
+
+### Korrektur meiner eigenen Angabe
+
+Meine Zahl „132 auflösbare IDs" war falsch. Richtig sind **130 unterschiedliche
+IDs**; zwei der 132 Vorkommen waren Querverweise, die der Importer
+fälschlich als Definitionen behandelte.
+
+### Verweise wurden als Anforderungen importiert
+
+Reproduziert: `BMS-REQ-THM-0403` wird in Dokument 02 erwähnt und in 05
+definiert, `BMS-REQ-PWR-0905` innerhalb von Dokument 10. Jeder ID-Treffer
+begann eine neue Anforderung, wodurch die zitierende Anforderung mitten im
+Satz endete und ein Phantom entstand.
+
+Neu wird zwischen Definition und Verweis unterschieden: eine Definition steht
+am Zeilenanfang, höchstens hinter Überschriftenzeichen, einem Listenpunkt,
+Fettmarkierung oder einem Label wie `Requirement:`. Eine ID mitten im Satz ist
+ein Verweis und wird in `Requirement.references` gespeichert. `reference_report()`
+löst die Verweise deterministisch auf und meldet mehrfache Definitionen sowie
+Verweise ohne Ziel. Findet ein Dokument nur Verweise und keine Definition,
+wird das als Befund gemeldet statt still zu raten.
+
+Ergebnis für den Bestand: **136 Anforderungen, 130 mit ID, alle eindeutig,
+2 Querverweise aufgelöst, 0 unauflösbar** – und die zuvor abgeschnittene
+Anforderung ist wieder vollständig.
+
+### Doppelte Testfall-IDs bei mehreren Läufen
+
+Reproduziert: zwei Läufe ergaben 10 Testfälle mit 5 IDs. Die Einheiten-IDs
+tragen jetzt ein kurzes Laufkürzel (`TC-2ca954-U001-01`), womit auch die daraus
+abgeleiteten Fragen-IDs eindeutig sind. `add_run()` lehnt einen Lauf ab, dessen
+Fall-IDs bereits existieren, und übernimmt neue Quelldokumente ins Projekt.
+
+### Freigabe trotz offener Fragen
+
+Beide Fälle reproduziert und behoben. `approval_report()` bezieht jetzt
+übergeordnete Projektfragen ein, die dieselbe Anforderung betreffen oder keiner
+Anforderung zugeordnet sind. Taucht nach einer Freigabe ein neuer Blocker auf –
+eine neue Frage am Fall, eine neue Projektfrage, eine zurückgenommene
+Befundannahme –, wird die Freigabe sichtbar zurückgezogen und der Vorgang
+protokolliert. `recheck_all()` prüft alle Freigaben erneut.
+
+Dabei fiel auf, dass die aus der Validierung abgeleiteten Rückfragen als
+Projektfragen gespeichert wurden. Mit der verschärften Prüfung hätten sie die
+Freigabe dauerhaft blockiert, ohne dass man sie dort klären kann – sie sind
+bereits Befunde ihres eigenen Entwurfs. Projektfragen enthalten jetzt nur noch
+Rückfragen des Modells.
+
+### Ungespeicherte Änderungen beim Schließen
+
+Das Fenster führt einen Änderungsstatus, zeigt ihn im Titel und fragt beim
+Schließen und beim Öffnen eines anderen Projekts mit Speichern / Verwerfen /
+Abbrechen nach. Abbrechen hält das Fenster offen.
+
+Teststand: **677 bestanden, 4 übersprungen**.
 
 ## 9 Commits
 

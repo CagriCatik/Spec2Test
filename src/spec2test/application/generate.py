@@ -84,18 +84,23 @@ class _Unit:
 
 
 def plan_units(
-    requirements: Sequence[Requirement], settings: GenerationSettings
+    requirements: Sequence[Requirement],
+    settings: GenerationSettings,
+    *,
+    prefix: str = "",
 ) -> list[_Unit]:
     """Group requirements into generation units inside the input budget.
 
-    Oversized groups are split visibly; nothing is ever truncated.
+    Oversized groups are split visibly; nothing is ever truncated. ``prefix``
+    makes the unit IDs - and with them every test case and question ID derived
+    from them - unique across the runs of a project.
     """
     units: list[_Unit] = []
     current: list[Requirement] = []
 
     def flush() -> None:
         if current:
-            units.append(_Unit(f"U{len(units) + 1:03d}", list(current)))
+            units.append(_Unit(f"{prefix}U{len(units) + 1:03d}", list(current)))
             current.clear()
 
     for req in requirements:
@@ -150,7 +155,9 @@ def generate_drafts(
         started_at=_now(),
     )
     deadline = Deadline(settings.job_timeout_s)
-    units = plan_units(requirements, settings)
+    # a short token of the run id keeps IDs unique when a project collects
+    # several runs
+    units = plan_units(requirements, settings, prefix=f"{run.run_id.split('-')[-1][:6]}-")
     run.planned_unit_count = len(units)
     cancelled = False
 

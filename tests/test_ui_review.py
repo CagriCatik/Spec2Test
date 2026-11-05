@@ -34,12 +34,28 @@ def app():
 
 
 @pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """No interface test may open a connection.
+
+    Without this a host such as http://box.lan:11434 sends the test run into a
+    DNS lookup. Tests that care about the list patch ModelListTask.run.
+    """
+    monkeypatch.setattr(workers, "list_models", lambda _client: ["stub-model:1b"])
+
+
+@pytest.fixture(autouse=True)
 def quiet(monkeypatch, tmp_path, app):
     for name in ("critical", "warning", "information"):
         monkeypatch.setattr(QMessageBox, name, staticmethod(lambda *a, **k: None))
+    # a real question dialog would block the run forever; default to discard
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Discard)
+    )
     monkeypatch.chdir(tmp_path)
     yield
     for widget in list(QApplication.topLevelWidgets()):
+        if hasattr(widget, "_project_dirty"):
+            widget._project_dirty = False
         widget.close()
         widget.deleteLater()
     for _ in range(3):
@@ -306,3 +322,114 @@ def test_saving_without_a_project_is_reported(app, tmp_path):
     assert window.save_project() is False
     assert "nothing to save" in window.log.toPlainText()
     window.close()
+
+
+# =====================================================================
+# unsaved changes
+# =====================================================================
+def test_a_fresh_run_marks_the_project_as_unsaved(window):
+    assert window._project_dirty is True
+    assert window.windowTitle().endswith("*")
+
+
+def test_saving_clears_the_unsaved_marker(window, tmp_path):
+    window._write_project(ProjectStore(tmp_path / "demo.s2t.json"))
+    assert window._project_dirty is False
+    assert not window.windowTitle().endswith("*")
+
+
+def test_a_review_decision_marks_the_project_as_unsaved(window, tmp_path, monkeypatch):
+    window._write_project(ProjectStore(tmp_path / "demo.s2t.json"))
+    assert window._project_dirty is False
+
+    case = next(iter(window._project.test_cases))
+    select(window, case.case_id)
+    monkeypatch.setattr(window.review, "_ask", answers("looks wrong"))
+    window.review.reject()
+
+    assert window._project_dirty is True
+
+
+def test_closing_with_unsaved_changes_offers_save_discard_cancel(window, monkeypatch):
+    seen: dict = {}
+
+    def fake_question(_parent, title, text, buttons=None, default=None):
+        seen["title"] = title
+        seen["buttons"] = buttons
+        return QMessageBox.Discard
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(fake_question))
+    assert window.confirm_discard_changes() is True
+
+    assert seen["title"] == "Unsaved changes"
+    offered = seen["buttons"]
+    for button in (QMessageBox.Save, QMessageBox.Discard, QMessageBox.Cancel):
+        assert offered & button, f"{button} is not offered"
+
+
+def test_cancel_keeps_the_window_open(window, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Cancel)
+    )
+    assert window.confirm_discard_changes() is False
+
+    from PySide6.QtGui import QCloseEvent
+
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert event.isAccepted() is False, "the window closed despite Cancel"
+    assert window._project_dirty is True
+
+
+def test_save_from_the_dialog_writes_the_project(window, tmp_path, monkeypatch):
+    window._project_store = ProjectStore(tmp_path / "demo.s2t.json")
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Save)
+    )
+    assert window.confirm_discard_changes() is True
+    assert (tmp_path / "demo.s2t.json").exists()
+    assert window._project_dirty is False
+
+
+def test_discard_loses_the_changes_knowingly(window, monkeypatch):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Discard)
+    )
+    assert window.confirm_discard_changes() is True
+    assert "discarded" in window.log.toPlainText()
+
+
+def test_an_unchanged_project_closes_without_asking(window, tmp_path, monkeypatch):
+    window._write_project(ProjectStore(tmp_path / "demo.s2t.json"))
+    asked = {"n": 0}
+
+    def counting(*_a, **_k):
+        asked["n"] += 1
+        return QMessageBox.Discard
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(counting))
+    assert window.confirm_discard_changes() is True
+    assert asked["n"] == 0
+
+
+def test_opening_another_project_asks_first(window, tmp_path, monkeypatch):
+    path = tmp_path / "demo.s2t.json"
+    window._write_project(ProjectStore(path))
+    case = next(iter(window._project.test_cases))
+    select(window, case.case_id)
+    monkeypatch.setattr(window.review, "_ask", answers("wrong"))
+    window.review.reject()
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Cancel)
+    )
+    assert window.open_project(path) is False, "the open went ahead despite Cancel"
+
+
+def test_a_second_run_merges_into_the_same_project(window, spec_a):
+    before = len(window._project.test_cases)
+    window.start_run()
+    assert len(window._project.test_cases) == before * 2
+    ids = [c.case_id for c in window._project.test_cases]
+    assert len(set(ids)) == len(ids), "merging produced duplicate IDs"
+    assert len(window._project.runs) == 2

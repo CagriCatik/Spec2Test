@@ -52,7 +52,20 @@ def no_modal_dialogs(monkeypatch):
     monkeypatch.setattr(
         QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
     )
+    monkeypatch.setattr(
+        QMessageBox, "Discard", QMessageBox.Discard, raising=False
+    )
     return shown
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """No interface test may open a connection.
+
+    Without this a host such as http://box.lan:11434 sends the test run into a
+    DNS lookup. Tests that care about the list patch ModelListTask.run.
+    """
+    monkeypatch.setattr(workers, "list_models", lambda _client: ["stub-model:1b"])
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +84,10 @@ def clean_qt_state(app):
     """
     yield
     for widget in list(QApplication.topLevelWidgets()):
+        # closing must not raise a dialog here: monkeypatches may already be
+        # undone by the time this teardown runs
+        if hasattr(widget, "_project_dirty"):
+            widget._project_dirty = False
         widget.close()
         widget.deleteLater()
     for _ in range(3):

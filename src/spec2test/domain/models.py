@@ -135,6 +135,9 @@ class Requirement:
     external_id: str | None = None
     clarification_status: ClarificationStatus = ClarificationStatus.CLEAR
     notes: tuple[str, ...] = ()
+    #: external IDs mentioned inside this requirement's text - references to
+    #: other requirements, never definitions of new ones
+    references: tuple[str, ...] = ()
 
     @property
     def has_external_id(self) -> bool:

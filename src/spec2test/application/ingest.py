@@ -30,6 +30,16 @@ DEFAULT_REQUIREMENT_ID_PATTERN = (
     r"\b((?:[A-Z][A-Z0-9]*-)*REQ(?:-[A-Z][A-Z0-9]*)*-\d+(?:\.\d+)*)\b"
 )
 
+# What may stand between the start of a line and a requirement ID for the ID
+# to count as a *definition*: heading markers, a list bullet, bold markers and
+# a label such as "Requirement:". Anything else means the ID is a reference
+# inside running text.
+DEFINITION_PREFIX_PATTERN = (
+    r"\s{0,3}(?:#{1,6}\s*)?(?:[-*+]\s+)?(?:\*\*|__)?\s*"
+    r"(?:(?:Requirement|Anforderung|Req)\b[\s:.\-]*)?(?:\*\*|__)?\s*"
+)
+_DEFINITION_PREFIX = re.compile(DEFINITION_PREFIX_PATTERN, re.IGNORECASE)
+
 _MODAL_WORDS = (
     "shall",
     "must",
@@ -117,6 +127,17 @@ def _spans_for_range(
     return tuple(spans)
 
 
+def _is_definition(text: str, start: int) -> bool:
+    """True when the ID at ``start`` opens a requirement rather than citing one.
+
+    A definition stands at the beginning of its line, optionally behind
+    heading markers, a bullet, bold markers or a label such as "Requirement:".
+    An ID in the middle of a sentence is a reference to another requirement.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    return _DEFINITION_PREFIX.fullmatch(text, line_start, start) is not None
+
+
 def _needs_clarification(text: str, id_pattern: str) -> bool:
     """Vague wording without any measurable criterion.
 
@@ -159,7 +180,19 @@ def extract_requirements(
         if seg.section is not None and seg.char_start > 0
     )
 
-    matches = list(re.finditer(id_pattern, text))
+    all_matches = list(re.finditer(id_pattern, text))
+    matches = [m for m in all_matches if _is_definition(text, m.start())]
+    if not matches and all_matches:
+        result.issues.append(
+            ValidationIssue(
+                "C_NO_REQUIREMENT_DEFINITION",
+                Severity.CLARIFICATION,
+                document.filename,
+                f"{len(all_matches)} requirement ID(s) occur only inside running "
+                "text, so none of them defines a requirement here. Check the "
+                "document structure before generating from it.",
+            )
+        )
     anchored: list[tuple[int, int, str]] = []
     for i, match in enumerate(matches):
         start = match.start()
@@ -192,6 +225,13 @@ def extract_requirements(
     for start, end, external_id in anchored:
         body = text[start:end].rstrip()
         end = start + len(body)
+        references = tuple(
+            dict.fromkeys(
+                found
+                for found in re.findall(id_pattern, body)
+                if found != external_id
+            )
+        )
         requirement = Requirement(
             requirement_id=internal_requirement_id(document, start),
             external_id=external_id,
@@ -202,6 +242,7 @@ def extract_requirements(
                 if _needs_clarification(body, id_pattern)
                 else ClarificationStatus.CLEAR
             ),
+            references=references,
         )
         result.requirements.append(requirement)
         seen_external[external_id] = seen_external.get(external_id, 0) + 1
@@ -298,6 +339,74 @@ def _capture_unidentified(
             )
         )
     return found
+
+
+@dataclass
+class ReferenceReport:
+    """How the captured requirements refer to each other."""
+
+    #: external ID -> the requirements that define it (more than one is a defect)
+    definitions: dict[str, list[Requirement]] = field(default_factory=dict)
+    #: (source requirement, referenced external ID) that nothing defines
+    unresolved: list[tuple[Requirement, str]] = field(default_factory=list)
+    #: referenced external ID -> requirements citing it
+    citations: dict[str, list[Requirement]] = field(default_factory=dict)
+
+    @property
+    def duplicate_definitions(self) -> dict[str, list[Requirement]]:
+        return {k: v for k, v in self.definitions.items() if len(v) > 1}
+
+    def issues(self) -> list[ValidationIssue]:
+        found: list[ValidationIssue] = []
+        for external_id, requirements in self.duplicate_definitions.items():
+            where = ", ".join(
+                sorted({span.document_id for r in requirements for span in r.spans})
+            )
+            found.append(
+                ValidationIssue(
+                    "C_DUPLICATE_DEFINITION",
+                    Severity.CLARIFICATION,
+                    external_id,
+                    f"{external_id} is defined {len(requirements)} times ({where}); "
+                    "the occurrences are kept separate and must be disambiguated",
+                )
+            )
+        for requirement, target in self.unresolved:
+            found.append(
+                ValidationIssue(
+                    "C_UNRESOLVED_REFERENCE",
+                    Severity.CLARIFICATION,
+                    requirement.display_id(),
+                    f"refers to {target}, which is not part of the imported set",
+                )
+            )
+        return found
+
+    def resolve(self, external_id: str) -> Requirement | None:
+        """The single requirement defining this ID, if it is unambiguous."""
+        candidates = self.definitions.get(external_id, [])
+        return candidates[0] if len(candidates) == 1 else None
+
+
+def reference_report(requirements: Sequence[Requirement]) -> ReferenceReport:
+    """Resolve the references between the captured requirements.
+
+    This is the deterministic first stage of retrieval: a requirement that
+    says "see BMS-REQ-THM-0403" is linked to the requirement defining it,
+    without any search.
+    """
+    report = ReferenceReport()
+    for requirement in requirements:
+        if requirement.external_id:
+            report.definitions.setdefault(requirement.external_id, []).append(
+                requirement
+            )
+    for requirement in requirements:
+        for target in requirement.references:
+            report.citations.setdefault(target, []).append(requirement)
+            if target not in report.definitions:
+                report.unresolved.append((requirement, target))
+    return report
 
 
 def import_documents(

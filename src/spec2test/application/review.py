@@ -90,7 +90,13 @@ def project_from_run(
         requirements=list(requirements),
         test_cases=list(run.test_cases),
         runs=[run],
-        open_questions=list(run.open_questions),
+        # Only questions the model raised become project questions. Questions
+        # derived from validation are already findings of their own draft and
+        # are cleared there; keeping a second copy here would block approval
+        # with no way to clear it.
+        open_questions=[
+            q for q in run.open_questions if q.origin is QuestionOrigin.MODEL
+        ],
     )
     for case in project.test_cases:
         project.history.append(
@@ -106,12 +112,36 @@ def project_from_run(
     return project
 
 
-def add_run(project: Project, run: GenerationRun, requirements: Sequence[Requirement]) -> None:
-    """Add the result of a further run without touching existing drafts."""
+def add_run(
+    project: Project,
+    run: GenerationRun,
+    requirements: Sequence[Requirement],
+    documents: Sequence[SourceDocument] = (),
+) -> None:
+    """Add the result of a further run without touching existing drafts.
+
+    Refuses to merge a run whose case IDs already exist: a duplicate ID would
+    make an edit or a decision hit the wrong draft.
+    """
+    existing = {case.case_id for case in project.test_cases}
+    clashes = sorted(existing.intersection(c.case_id for c in run.test_cases))
+    if clashes:
+        raise ReviewError(
+            f"run {run.run_id} brings test case IDs that already exist in this "
+            f"project: {', '.join(clashes[:5])}"
+            + (" …" if len(clashes) > 5 else "")
+        )
+
+    known_documents = {d.document_id for d in project.documents}
+    project.documents.extend(
+        d for d in documents if d.document_id not in known_documents
+    )
     known = {r.requirement_id for r in project.requirements}
     project.requirements.extend(r for r in requirements if r.requirement_id not in known)
     project.runs.append(run)
-    project.open_questions.extend(run.open_questions)
+    project.open_questions.extend(
+        q for q in run.open_questions if q.origin is QuestionOrigin.MODEL
+    )
     for case in run.test_cases:
         project.test_cases.append(case)
         project.history.append(
@@ -206,6 +236,59 @@ def resolve_question(
     return updated
 
 
+def resolve_project_question(
+    project: Project, question_id: str, answer: str, *, by: str = DEFAULT_REVIEWER
+) -> OpenQuestion:
+    """Clear a project-level question. It unblocks every draft it concerned."""
+    index = next(
+        (
+            i
+            for i, question in enumerate(project.open_questions)
+            if question.question_id == question_id
+        ),
+        None,
+    )
+    if index is None:
+        raise ReviewError(f"this project has no question {question_id!r}")
+    at = _now()
+    resolved = project.open_questions[index].resolve(answer, by=by, at=at)
+    project.open_questions[index] = resolved
+    project.history.append(
+        ReviewEvent(
+            action=ReviewAction.QUESTION_RESOLVED,
+            case_id="",
+            revision=0,
+            at=at,
+            by=by,
+            note=f"{question_id}: {answer.strip()}",
+        )
+    )
+    return resolved
+
+
+def add_project_question(
+    project: Project,
+    question: str,
+    requirement_ids: Sequence[str] = (),
+    *,
+    by: str = DEFAULT_REVIEWER,
+) -> OpenQuestion:
+    """Raise a question for a requirement; it blocks every draft using it."""
+    new_question = OpenQuestion(
+        question_id=f"PQ-{len(project.open_questions) + 1:03d}",
+        question=question.strip(),
+        requirement_ids=tuple(requirement_ids),
+        origin=QuestionOrigin.REVIEWER,
+    )
+    project.open_questions.append(new_question)
+    for case in list(project.test_cases):
+        if case.review_status is ReviewStatus.APPROVED:
+            _withdraw_approval_if_blocked(
+                project, case, f"new question {new_question.question_id}", by=by
+            )
+    return new_question
+
+
 def add_question(
     project: Project,
     case_id: str,
@@ -235,7 +318,39 @@ def add_question(
             note=new_question.question,
         )
     )
-    return updated
+    return _withdraw_approval_if_blocked(
+        project, updated, f"new question {new_question.question_id}", by=by
+    )
+
+
+def _withdraw_approval_if_blocked(
+    project: Project, case: TestCase, reason: str, *, by: str = DEFAULT_REVIEWER
+) -> TestCase:
+    """An approval must not survive a blocker that appeared afterwards."""
+    if case.review_status is not ReviewStatus.APPROVED:
+        return case
+    allowed, _report = approval_report(project, case.case_id)
+    if allowed:
+        return case
+    withdrawn = replace(
+        case,
+        review_status=ReviewStatus.DRAFT,
+        review_note=f"approval withdrawn: {reason}",
+    )
+    project.test_cases[project.test_cases.index(case)] = withdrawn
+    project.history.append(
+        ReviewEvent(
+            action=ReviewAction.REOPENED,
+            case_id=case.case_id,
+            revision=case.revision,
+            at=_now(),
+            by=by,
+            note=f"approval withdrawn: {reason}",
+            status_before=ReviewStatus.APPROVED,
+            status_after=ReviewStatus.DRAFT,
+        )
+    )
+    return withdrawn
 
 
 def accept_finding(
@@ -310,15 +425,40 @@ def revoke_finding(
             note=f"acceptance of {code} at {path} withdrawn",
         )
     )
-    return updated
+    return _withdraw_approval_if_blocked(
+        project, updated, f"acceptance of {code} withdrawn", by=by
+    )
 
 
 # ---------------------------------------------------------------- decision ---
+def relevant_project_questions(project: Project, case: TestCase) -> list[OpenQuestion]:
+    """Unanswered project-level questions that concern this draft.
+
+    A question raised for a requirement blocks every draft written against
+    that requirement, not only the draft it happened to be attached to.
+    """
+    requirement_ids = set(case.requirement_ids)
+    return [
+        question
+        for question in project.open_questions
+        if not question.resolved
+        and (
+            not question.requirement_ids
+            or requirement_ids.intersection(question.requirement_ids)
+        )
+    ]
+
+
 def approval_report(project: Project, case_id: str) -> tuple[bool, ValidationReport]:
     """Re-run the deterministic validation for this exact revision."""
     case = _require_case(project, case_id)
     return may_approve(
-        case, project.requirements, open_questions=case.unresolved_questions
+        case,
+        project.requirements,
+        open_questions=(
+            *case.unresolved_questions,
+            *relevant_project_questions(project, case),
+        ),
     )
 
 
@@ -488,6 +628,20 @@ def apply_requirement_changes(
         )
     project.requirements = list(requirements)
     return touched
+
+
+def recheck_all(project: Project, *, by: str = DEFAULT_REVIEWER) -> list[TestCase]:
+    """Withdraw every approval that current validation no longer supports."""
+    withdrawn: list[TestCase] = []
+    for case in list(project.test_cases):
+        if case.review_status is not ReviewStatus.APPROVED:
+            continue
+        updated = _withdraw_approval_if_blocked(
+            project, case, "a later check found a blocker", by=by
+        )
+        if updated.review_status is not ReviewStatus.APPROVED:
+            withdrawn.append(updated)
+    return withdrawn
 
 
 # ------------------------------------------------------------------ report ---

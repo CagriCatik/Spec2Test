@@ -101,7 +101,7 @@ HTTP response objects never cross a port boundary: the application sees
 | `ports.py` | Interfaces for model, document import, run storage and export |
 | `contracts.py` | Versioned strict JSON contract plus the four parse outcomes |
 | `chunking.py` | Block building; every page lands in at least one block |
-| `ingest.py` | Requirement capture with source spans |
+| `ingest.py` | Requirement capture with source spans, definitions vs. references |
 | `prompts.py` | Versioned system/user messages and the repair message |
 | `assembly.py` | Contract objects → domain objects; ID assignment; legacy import |
 | `generate.py` | Generation, bounded repair, cancellation, run status |
@@ -258,6 +258,21 @@ generation limits and portable relative paths. It never holds the API key.
 | scikit-learn | optional, only for the legacy RAG option |
 
 PyPDF2 was removed: PDF reading is unified on PyMuPDF.
+
+## Definitions and references
+
+A requirement ID at the start of a line - at most behind heading markers, a
+bullet, bold markers or a label such as `Requirement:` - *defines* a
+requirement. The same ID inside a sentence is a *reference* and is stored in
+`Requirement.references`. Without that distinction a sentence like "as
+specified in BMS-REQ-THM-0403" would cut the citing requirement in half and
+invent a second one.
+
+`ingest.reference_report()` resolves the references across all imported
+documents: which requirement defines an ID, who cites it, which citations have
+no target, and which IDs are defined more than once. An ambiguous ID does not
+resolve. This is the deterministic first stage of retrieval - no search
+involved.
 
 ## Review workflow
 

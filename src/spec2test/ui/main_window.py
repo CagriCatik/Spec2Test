@@ -55,7 +55,7 @@ from ..adapters.persistence.project_store import (
     ProjectLocked,
     ProjectStore,
 )
-from ..application.review import add_run, project_from_run
+from ..application.review import ReviewError, add_run, project_from_run
 from ..adapters.ollama import API_KEY_ENV, capabilities_for, check_model_choice
 from ..application.legacy import legacy_rows
 from ..bootstrap import default_config_path, generation_settings_from_config
@@ -152,6 +152,7 @@ class MainWindow(QMainWindow):
         self._run = None
         self._project = None
         self._project_store: ProjectStore | None = None
+        self._project_dirty = False
         self._last_requirements: list = []
         self._last_documents: list = []
         self._task: DraftTask | None = None
@@ -877,7 +878,18 @@ class MainWindow(QMainWindow):
                 name=(self._spec_paths[0].stem if self._spec_paths else "project"),
             )
         else:
-            add_run(self._project, run, self._last_requirements)
+            try:
+                add_run(
+                    self._project,
+                    run,
+                    self._last_requirements,
+                    self._last_documents,
+                )
+            except ReviewError as exc:
+                self.log_line(f"Run not merged into the project: {exc}")
+                QMessageBox.warning(self, "Run not merged", str(exc))
+                return
+        self._mark_dirty()
         self.review.show_case(self._project, None)
 
     def _on_draft_selected(self, current, _previous) -> None:
@@ -889,6 +901,7 @@ class MainWindow(QMainWindow):
     def _on_review_changed(self, case_id: str) -> None:
         if self._project is None:
             return
+        self._mark_dirty()
         self._fill_drafts_from_project()
         self._fill_summary()
         self._select_case(case_id)
@@ -1139,6 +1152,9 @@ class MainWindow(QMainWindow):
                 return False
             path = name
 
+        if not self.confirm_discard_changes():
+            return False
+
         store = ProjectStore(path)
         try:
             project = store.load()
@@ -1156,6 +1172,7 @@ class MainWindow(QMainWindow):
         self._release_project()
         self._project = project
         self._project_store = store
+        self._project_dirty = False
         self._last_requirements = list(project.requirements)
         self._last_documents = list(project.documents)
         self._run = project.runs[-1] if project.runs else None
@@ -1181,7 +1198,7 @@ class MainWindow(QMainWindow):
         )
         self.log_line(message)
         self.statusBar().showMessage(message)
-        self.setWindowTitle(f"Spec2Test - {project.name}")
+        self._write_project_title()
         return True
 
     def save_project(self) -> bool:
@@ -1221,9 +1238,37 @@ class MainWindow(QMainWindow):
             self.log_line(f"Project could not be saved: {exc}")
             QMessageBox.critical(self, "Save failed", str(exc))
             return False
+        self._project_dirty = False
         self.log_line(f"Project saved to {path}")
         self.statusBar().showMessage(f"Project saved to {path}")
-        self.setWindowTitle(f"Spec2Test - {self._project.name}")
+        self._write_project_title()
+        return True
+
+    def _mark_dirty(self) -> None:
+        self._project_dirty = True
+        title = f"Spec2Test - {self._project.name}" if self._project else "Spec2Test"
+        self.setWindowTitle(f"{title} *")
+
+    def _write_project_title(self) -> None:
+        name = self._project.name if self._project else None
+        self.setWindowTitle(f"Spec2Test - {name}" if name else "Spec2Test")
+
+    def confirm_discard_changes(self) -> bool:
+        """Ask before losing unsaved review work. False means "stay"."""
+        if self._project is None or not self._project_dirty:
+            return True
+        answer = QMessageBox.question(
+            self,
+            "Unsaved changes",
+            "The project has unsaved changes.\n\nSave them before closing?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if answer == QMessageBox.Cancel:
+            return False
+        if answer == QMessageBox.Save:
+            return self.save_project()
+        self.log_line("Unsaved project changes discarded.")
         return True
 
     def _release_project(self) -> None:
@@ -1235,11 +1280,14 @@ class MainWindow(QMainWindow):
     # shutdown
     # =================================================================
     def closeEvent(self, event):  # noqa: N802 - Qt naming
-        """Stop a running generation and let pending requests finish.
+        """Ask about unsaved review work, then stop the running generation.
 
         config.yml is deliberately not written here: settings are only stored
         when the user chooses it in the File menu.
         """
+        if not self.confirm_discard_changes():
+            event.ignore()
+            return
         self._closing = True
         self._release_project()
         if self._task is not None:
