@@ -20,6 +20,15 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """The tests must never read or write the repository's config.yml."""
+    import gui
+
+    monkeypatch.setattr(gui, "CFG_FILE", tmp_path / "config.yml")
+    return tmp_path / "config.yml"
+
+
 @pytest.fixture
 def window(app, monkeypatch):
     import gui
@@ -99,3 +108,36 @@ def test_the_worker_reports_an_unreadable_pdf_as_an_error(tmp_path):
     task.signals.error.connect(errors.append)
     task.run()
     assert errors and "PDF could not be read" in errors[0]
+
+
+# ------------------------------------------------- configuration safety ------
+def test_saving_from_the_gui_keeps_sections_it_does_not_know(window, isolated_config):
+    import yaml
+
+    isolated_config.write_text(
+        yaml.safe_dump(
+            {
+                "cloud": {"mode": "ollama_cloud", "host": "https://ollama.com"},
+                "generation": {"combine_pages": 5, "max_repair_attempts": 2},
+                "model": {"name": "old-model"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    window._save_persisted()
+    saved = yaml.safe_load(isolated_config.read_text(encoding="utf-8"))
+
+    assert saved["cloud"] == {"mode": "ollama_cloud", "host": "https://ollama.com"}
+    assert saved["generation"]["max_repair_attempts"] == 2, "unknown key was dropped"
+    assert "combine_pages" in saved["generation"]
+
+
+def test_the_merge_helper_overlays_without_dropping():
+    from gui import _merge_config
+
+    merged = _merge_config(
+        {"a": {"keep": 1, "change": 1}, "b": 1},
+        {"a": {"change": 2}, "c": 3},
+    )
+    assert merged == {"a": {"keep": 1, "change": 2}, "b": 1, "c": 3}

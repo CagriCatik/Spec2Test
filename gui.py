@@ -74,6 +74,18 @@ from config_models import (
 # ---------------------------------------------------------------------------
 CFG_FILE: Final[Path] = Path(__file__).with_name("config.yml")
 
+
+def _merge_config(existing: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+    """Overlay *updates* on *existing* without dropping unknown keys."""
+    merged = dict(existing)
+    for key, value in updates.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = _merge_config(current, value)
+        else:
+            merged[key] = value
+    return merged
+
 # ---------------------------------------------------------------------------
 # Main Window class
 # ---------------------------------------------------------------------------
@@ -253,10 +265,22 @@ class MainWindow(QMainWindow):
         self._apply_config(cfg)
 
     def _save_persisted(self) -> None:
-        """Dump current GUI state to *config.yml*."""
+        """Dump current GUI state to *config.yml*.
+
+        The GUI only knows the keys it has widgets for. Everything else in the
+        file - for example the ``cloud`` section used by the Spec2Test
+        pipeline - is merged back unchanged, so saving from the GUI never drops
+        settings it does not understand. Comments are not preserved by the YAML
+        writer.
+        """
         try:
+            existing: dict[str, Any] = {}
+            if CFG_FILE.exists():
+                with CFG_FILE.open() as fh:
+                    existing = yaml.safe_load(fh) or {}
+            merged = _merge_config(existing, self._collect_cfg())
             with CFG_FILE.open("w") as fh:
-                yaml.safe_dump(self._collect_cfg(), fh)
+                yaml.safe_dump(merged, fh, sort_keys=True, allow_unicode=True)
         except Exception as exc:
             self._log(f"⚠️  Couldn’t save {CFG_FILE.name}: {exc}")
 

@@ -90,6 +90,12 @@ werden nicht verfolgt, sondern als Fehler gemeldet.
 * `config.yml`: benutzerspezifische Windows-Pfade durch portable relative
   Beispiele ersetzt, `cloud`- und `generation`-Abschnitt ergänzt. Der alte
   Leser (`config_models.AppConfig`) funktioniert weiter.
+* **Die GUI überschrieb `config.yml` bisher vollständig** und hätte die neuen
+  Abschnitte beim Schließen des Fensters verworfen – aufgefallen, weil der
+  GUI-Test die Repository-Konfiguration zurückgesetzt hat. `_save_persisted`
+  führt die GUI-Werte jetzt über den bestehenden Dateiinhalt zusammen, sodass
+  unbekannte Schlüssel erhalten bleiben; die Tests arbeiten auf einer
+  temporären Kopie.
 * Neue Abhängigkeit **pydantic**, begründet in `requirements.txt`: die Cloud
   erzwingt kein Schema, deshalb ist lokale Validierung Pflicht; pydantic
   liefert strikte Modelle mit „extra verboten" und präzise Fehlerpfade, die
@@ -109,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  408 bestanden, 5 übersprungen
+pytest -q  →  410 bestanden, 5 übersprungen
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -129,6 +135,9 @@ TF-IDF-Test ohne scikit-learn.
 | `test_end_to_end.py` | Fixtures → Fake-Modell → Prüfung → Speichern → erneutes Laden, plus CLI |
 | `test_gui_status.py` | Fenster baut, Status wird wahrheitsgemäß angezeigt, kein CLI-Aufruf |
 | `test_config.py` | portable Pfade, kein Key in der Datei, beide Konfigurationsleser |
+
+Dazu kommt der Nachweis, dass Speichern aus der GUI den `cloud`-Abschnitt und
+unbekannte Schlüssel nicht mehr verwirft.
 
 CI benötigt keine kostenpflichtigen Cloud-Aufrufe: alle HTTP-Tests laufen gegen
 einen Mock-Transport, alle Pipeline-Tests gegen Fake-Modelladapter.
@@ -234,7 +243,11 @@ hebt die Freigabe auf.
    keine Abdeckungskennzahlen** – AP 5 und AP 6.
 8. **Streaming ist nicht umgesetzt** (`stream: false`), wie im Plan als
    eigenes Arbeitspaket vorgesehen.
-9. **Der Umgebungs-Zufall** `pandas 3.1.1` / `PyMuPDF 2.1` wurde für die Tests
+9. **Kommentare in `config.yml` gehen beim Speichern aus der GUI verloren.**
+   Die Werte bleiben vollständig erhalten, der YAML-Writer schreibt aber keine
+   Kommentare zurück. Eine kommentarerhaltende Bibliothek wäre eine neue
+   Abhängigkeit und wurde dafür nicht als gerechtfertigt angesehen.
+10. **Der Umgebungs-Zufall** `pandas 3.1.1` / `PyMuPDF 2.1` wurde für die Tests
    benutzt; `requirements.txt` nennt weiter die festgeschriebenen Versionen des
    Ausgangsstands. Eine Abgleichprüfung der Pins steht aus.
 
