@@ -277,24 +277,34 @@ class MainWindow(QMainWindow):
 
         cfg = AppConfig.from_dict(cfg_dict)
         self._apply_config(cfg)
+        # remember the state as loaded, so an unchanged session does not
+        # rewrite the file and strip its comments
+        self._loaded_cfg = self._collect_cfg()
 
     def _save_persisted(self) -> None:
-        """Dump current GUI state to *config.yml*.
+        """Write the current GUI state to *config.yml* if it changed.
 
         The GUI only knows the keys it has widgets for. Everything else in the
-        file - for example the ``cloud`` section used by the Spec2Test
-        pipeline - is merged back unchanged, so saving from the GUI never drops
-        settings it does not understand. Comments are not preserved by the YAML
-        writer.
+        file is merged back unchanged, so saving never drops settings the GUI
+        does not understand.
+
+        Nothing is written when no value changed: the YAML writer cannot keep
+        comments, so merely opening and closing the window must not strip the
+        documentation from a hand-edited file.
         """
+        current = self._collect_cfg()
+        if current == getattr(self, "_loaded_cfg", None):
+            return
         try:
             existing: dict[str, Any] = {}
             if CFG_FILE.exists():
                 with CFG_FILE.open() as fh:
                     existing = yaml.safe_load(fh) or {}
-            merged = _merge_config(existing, self._collect_cfg())
+            merged = _merge_config(existing, current)
             with CFG_FILE.open("w") as fh:
                 yaml.safe_dump(merged, fh, sort_keys=True, allow_unicode=True)
+            self._loaded_cfg = current
+            self._log(f"💾 Settings written to {CFG_FILE.name}")
         except Exception as exc:
             self._log(f"⚠️  Couldn’t save {CFG_FILE.name}: {exc}")
 

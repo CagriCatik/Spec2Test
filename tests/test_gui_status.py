@@ -303,3 +303,27 @@ def test_the_model_list_follows_the_selected_mode(window, monkeypatch):
 
     assert "http://localhost:11434" in seen
     assert "https://ollama.com" in seen, "the model list ignored the cloud mode"
+
+
+def test_an_unchanged_session_does_not_rewrite_the_configuration(window, isolated_config):
+    """Opening and closing the GUI must not strip the file's comments."""
+    original = (
+        "# hand-written comment that must survive\n"
+        "cloud:\n  mode: ollama_cloud\n"
+        "model:\n  name: documented-model\n"
+    )
+    isolated_config.write_text(original, encoding="utf-8")
+    window._load_persisted()
+
+    window._save_persisted()
+    assert isolated_config.read_text(encoding="utf-8") == original
+
+    # a real change is still written
+    window.read_timeout.setValue(window.read_timeout.value() + 5)
+    window._save_persisted()
+    assert isolated_config.read_text(encoding="utf-8") != original
+    import yaml
+
+    saved = yaml.safe_load(isolated_config.read_text(encoding="utf-8"))
+    assert saved["model"]["name"] == "documented-model"
+    assert saved["cloud"]["mode"] == "ollama_cloud"

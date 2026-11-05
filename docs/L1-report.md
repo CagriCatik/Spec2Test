@@ -115,7 +115,7 @@ erzeugt, damit keine Binärdatei die Referenzwahrheit bestimmt.
 ## 4 Ausgeführte Tests
 
 ```
-pytest -q  →  436 bestanden, 5 übersprungen
+pytest -q  →  437 bestanden, 5 übersprungen
 ```
 
 Übersprungen: vier Live-Tests (benötigen `SPEC2TEST_LIVE=1`) und ein
@@ -247,10 +247,17 @@ hebt die Freigabe auf.
    keine Abdeckungskennzahlen** – AP 5 und AP 6.
 8. **Streaming ist nicht umgesetzt** (`stream: false`), wie im Plan als
    eigenes Arbeitspaket vorgesehen.
-9. **Kommentare in `config.yml` gehen beim Speichern aus der GUI verloren.**
-   Die Werte bleiben vollständig erhalten, der YAML-Writer schreibt aber keine
-   Kommentare zurück. Eine kommentarerhaltende Bibliothek wäre eine neue
-   Abhängigkeit und wurde dafür nicht als gerechtfertigt angesehen.
+9. **Kommentare in `config.yml` gehen verloren, sobald die GUI eine Einstellung
+   speichert.** Beim Nacharbeiten fiel auf, dass schon das Öffnen und Schließen
+   des Fensters die Datei umschrieb und damit die Kommentare entfernte. Die GUI
+   schreibt jetzt nur noch, wenn sich tatsächlich ein Wert geändert hat –
+   eine unveränderte Sitzung lässt die Datei unberührt. Ändert man dagegen eine
+   Einstellung in der GUI, bleiben alle Werte und unbekannten Abschnitte
+   erhalten, die Kommentare aber nicht: der YAML-Writer kann sie nicht
+   zurückschreiben. Eine kommentarerhaltende Bibliothek wäre eine neue
+   Abhängigkeit und ist dafür nicht gerechtfertigt; die bessere Lösung ist, den
+   GUI-Zustand von der Projektkonfiguration zu trennen (das vorhandene, bisher
+   ungenutzte `QSettings`-Objekt wäre der Ort dafür).
 10. **Der Umgebungs-Zufall** `pandas 3.1.1` / `PyMuPDF 2.1` wurde für die Tests
    benutzt; `requirements.txt` nennt weiter die festgeschriebenen Versionen des
    Ausgangsstands. Eine Abgleichprüfung der Pins steht aus.
@@ -302,7 +309,11 @@ verwendet. Geprüft in einer frischen venv außerhalb des Repositories: sowohl
 `spec2test run …` als auch `python -m spec2test.cli run …` laufen ohne
 `PYTHONPATH` durch.
 
-Teststand danach: **436 bestanden, 5 übersprungen**.
+Beim Nacharbeiten zusätzlich aufgefallen und behoben: schon das Öffnen und
+Schließen der GUI schrieb `config.yml` neu und entfernte dabei die Kommentare.
+Die GUI schreibt jetzt nur noch bei einer echten Änderung.
+
+Teststand danach: **437 bestanden, 5 übersprungen**.
 
 ### Direkter Cloud-Nachweis weiterhin offen
 
