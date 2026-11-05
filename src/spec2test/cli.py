@@ -9,6 +9,7 @@ Exit codes: 0 completed, 2 partial, 3 cancelled, 1 failed or aborted.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -71,7 +72,7 @@ def _cmd_models(args) -> int:
     config = load_config(args.config)
     settings = ollama_settings_from_config(config, mode=args.mode, model=args.model or "unused")
     if args.host:
-        settings = type(settings)(**{**settings.__dict__, "host": args.host})
+        settings = dataclasses.replace(settings, host=args.host)
     client = build_model(args.mode, settings, log=_out)
     try:
         names = list_models(client)
@@ -108,9 +109,7 @@ def _cmd_run(args) -> int:
             config, mode=args.mode, model=args.model
         )
         if args.host:
-            ollama_settings = type(ollama_settings)(
-                **{**ollama_settings.__dict__, "host": args.host}
-            )
+            ollama_settings = dataclasses.replace(ollama_settings, host=args.host)
         caps = capabilities_for(ollama_settings.model, args.mode)
         for note in caps.notes:
             _out(f"note: {note}")

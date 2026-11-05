@@ -1,171 +1,203 @@
 # Application Architecture
 
-## Overview
+Spec2Test turns requirements from PDF, TXT and Markdown into reviewable test
+drafts. The model proposes; validation, traceability and approval stay in the
+application.
 
-The application is a **Python desktop program** with a **PySide6 GUI** for generating structured test cases from requirement PDFs.
-It integrates with **Ollama** for LLM inference, providing both REST and CLI fallback communication. 
+## Layering
 
-Its architecture emphasizes:
+Four layers with a one-way dependency rule. `tests/test_architecture.py`
+enforces it by parsing the imports of every module.
 
-* Clear separation of UI, worker, core, and model integration
-* Asynchronous background processing
-* Resilience via dual-path Ollama communication
-* Modular configuration and prompt handling
-* Export capabilities for external consumption (CSV/XLSX)
-* Hardware-aware inference toggles so Ollama can prefer the GPU when present
-* Iteration-friendly tooling through response caching and post-run analytics
+| Layer | Package | Responsibility | May import |
+| - | - | - | - |
+| Domain | `src/spec2test/domain/` | Data model and rules | nothing but itself |
+| Application | `src/spec2test/application/` | Use cases and ports | domain |
+| Adapters | `src/spec2test/adapters/` | HTTP, documents, storage, fakes | domain, application |
+| UI | `gui.py`, `workers.py`, `qmodels.py` | PySide6 views and Qt workers | application via `core.py` |
 
----
+The domain imports no Qt, HTTP, PDF, Excel or even Pydantic. Qt signals and
+HTTP response objects never cross a port boundary: the application sees
+`ChatMessage`, `ModelReply` and `ImportedDocument`, never a `requests.Response`.
 
-## Component Architecture
-
-### 1. User Interface (UI)
-
-* **MainWindow**
-  Acts as the central controller for user actions:
-
-  * Provides the **Generate** button to start tasks.
-  * Displays results using **TestCaseTableModel**.
-  * Loads/saves configuration from `config.yml`.
-  * Allows selection of user prompts (`Prompt_*.txt`).
-  * Provides access to a static help file (`PARAMETER_DOC`).
-  * Offers export to **CSV/XLSX**.
-  * Hosts the **Performance & Cache** panel to toggle disk caching and tune TTL/size.
-  * Renders the **Insights** panel with quality heuristics (coverage, duplicates, missing fields).
-
-### 2. Worker
-
-* **GeneratorTask**
-  Runs asynchronously to keep the GUI responsive:
-
-  * Validates PDF by counting pages with **PyPDF2**.
-  * Launches `core.generate_test_cases` with PDF and configuration.
-  * Instantiates an optional `PromptCache` so repeated runs can short-circuit LLM calls.
-  * Emits signals when processing is complete, delivering results to the UI.
-
-### 3. Core Logic
-
-* **generate\_test\_cases** orchestrates the pipeline:
-
-  * Uses **PyMuPDF (fitz)** to extract text pages.
-  * Splits content into manageable chunks (with optional overlap for RAG).
-  * Optionally enriches prompts with TF–IDF selected related snippets.
-  * Constructs prompts for each chunk and retries when JSON is malformed.
-  * Sends prompts to `AgentLocal.generate`.
-  * Parses model outputs into structured test cases.
-  * Repairs malformed or incomplete outputs into valid JSON structures.
-  * Stores successful chunk responses inside `PromptCache` (when enabled) and reuses them on future runs.
-* Returns a list of dictionaries, each representing one structured case.
-
-* **summarise\_cases** aggregates quick QA metrics (complete cases, requirement counts, duplicate names) for display in the GUI.
-
-### 4. Model Integration
-
-* **AgentLocal.generate** manages Ollama communication:
-
-  * **Primary path**: HTTP POST to `http://localhost:11434/api/generate`, receiving streaming JSON token chunks.
-  * **Fallback path**: Runs `ollama run {model}` as a subprocess and captures stdout.
-  * Provides a lightweight health check before generation and a helper to build `[SYSTEM]` prompts.
-  * Applies the user-selected GPU/CPU hints (`num_gpu`, `main_gpu`, `gpu_layers`, `num_thread`) so inference is routed to the desired hardware profile.
-* Always assembles and returns a complete generation string.
-
-* **config_models.AppConfig** harmonises configuration between GUI, persistence, and worker threads.
-
----
-
-## Data and Configuration Flow
-
-```mermaid
-graph LR
-  Cfg[config.yml] -- load/save --> GUI[MainWindow]
-  GUI -. user selects .-> Prompt[Prompt_*.txt]
-  CORE[core.py] -. reads .-> SysPrompt[Prompt_Expert_Test_Architect.txt]
-  GUI --> WRK[GeneratorTask]
-  WRK --> CORE
-  CORE -->|structured cases| GUI
-  GUI -->|export| CSV & XLSX
+```
+          ┌────────── ui (PySide6) ──────────┐   ┌──── cli.py ────┐
+          │  gui.py  workers.py  qmodels.py  │   │ example run    │
+          └───────────────┬──────────────────┘   └───────┬────────┘
+                          │  core.py (compatibility)     │
+                          └──────────────┬───────────────┘
+                                         ▼
+                        ┌──── application (use cases) ────┐
+                        │ ingest  generate  contracts     │
+                        │ chunking  prompts  ports        │
+                        └──────────────┬──────────────────┘
+                                       ▼
+                        ┌──────────── domain ─────────────┐
+                        │ models.py      validation.py    │
+                        └─────────────────────────────────┘
+                                       ▲  implement the ports
+          ┌────────────────────────────┴────────────────────────────┐
+          │ adapters/ollama  adapters/documents  adapters/fake      │
+          │ adapters/persistence                                    │
+          └─────────────────────────────────────────────────────────┘
 ```
 
-* **Config.yml**: Stores paths, numeric parameters, and model options.
-* **Prompt files**: User-selected prompt + fixed system prompt (`Prompt_Expert_Test_Architect.txt`).
-* **Flow**:
-  User starts generation → Worker executes core → Core returns cases → Worker emits → GUI updates.
-* **Export**: GUI supports export to CSV and XLSX.
+## Modules
 
----
+### Domain — `domain/models.py`, `domain/validation.py`
 
-## End-to-End Workflow
+`SourceDocument`, `SourceSpan`, `Requirement`, `TestCase`, `TestStep`,
+`Measurement`, `OpenQuestion`, `ValidationIssue`, `GenerationAttempt`,
+`GenerationUnitResult`, `GenerationRun`.
+
+* A `TestStep` always pairs an action with its observable expectations.
+  Preconditions and postconditions are steps too, so a precondition that needs
+  several steps can state how each one is verified; successful execution is
+  never implied.
+* `Requirement` carries a stable internal ID and, if present, the external ID
+  from the document. The internal ID is never presented as a document ID.
+* Validation severities decide the workflow: `ERROR` blocks acceptance as a
+  draft, `CLARIFICATION` allows a draft but blocks approval, `INFO` is a note.
+* `RunStatus` is `completed`, `partial`, `failed` or `cancelled`. A run with no
+  accepted unit is never `completed`.
+
+### Application
+
+| Module | Responsibility |
+| - | - |
+| `ports.py` | Interfaces for model, document import, run storage and export |
+| `contracts.py` | Versioned strict JSON contract plus the four parse outcomes |
+| `chunking.py` | Block building; every page lands in at least one block |
+| `ingest.py` | Requirement capture with source spans |
+| `prompts.py` | Versioned system/user messages and the repair message |
+| `assembly.py` | Contract objects → domain objects; ID assignment; legacy import |
+| `generate.py` | Generation, bounded repair, cancellation, run status |
+| `deadline.py` | Bounded runtime per job |
+| `legacy.py` | Deprecated bridge for the existing GUI (removed with L2) |
+
+### Adapters
+
+| Module | Responsibility |
+| - | - |
+| `ollama/client.py` | HTTP transport, authentication, error mapping, retries |
+| `ollama/models.py` | Model list from `/api/tags` and known mode capabilities |
+| `documents/text_import.py` | TXT and Markdown with section and char positions |
+| `documents/pdf_import.py` | PDF pages via PyMuPDF; empty pages are reported |
+| `fake/model.py` | `ScriptedModel` and `RuleBasedFakeModel` for tests and CI |
+| `persistence/json_store.py` | Run storage with temp file and atomic replace |
+
+## The model contract
+
+Model answers use one versioned object. There are no mixed types such as
+"string or list", extra fields are rejected, and the contract carries neither
+IDs nor a review status — the application assigns both, so a model cannot
+approve its own output.
+
+```json
+{
+  "schema_version": "1.0",
+  "test_cases": [
+    {
+      "title": "...",
+      "objective": "...",
+      "requirement_refs": ["RAS-SW-REQ-0001"],
+      "preconditions": [{"order": 1, "action": "...", "expectations": ["..."]}],
+      "steps": [
+        {
+          "order": 1,
+          "action": "...",
+          "expectations": ["..."],
+          "measurements": [
+            {"quantity": "...", "value": "...", "unit": "...",
+             "tolerance": "...", "evidence": "quote from the requirement"}
+          ]
+        }
+      ],
+      "postconditions": [{"order": 1, "action": "...", "expectations": ["..."]}],
+      "open_questions": [{"question": "...", "requirement_refs": ["..."],
+                          "suggestion": "explicitly a proposal"}]
+    }
+  ],
+  "open_questions": []
+}
+```
+
+An answer is parsed into one of five outcomes, which are never collapsed into
+an empty list: `OK`, `EMPTY`, `INVALID_JSON`, `SCHEMA_INVALID`, `NO_TEST_CASES`.
+
+Ollama Cloud offers no schema-enforced structured outputs, so the `format`
+parameter is not assumed and local validation is mandatory.
+
+## Operating modes
+
+| Mode | Host | Authentication | GPU options |
+| - | - | - | - |
+| `ollama_cloud` | `https://ollama.com` | `Authorization: Bearer $OLLAMA_API_KEY` | not offered |
+| `ollama_local` | `http://localhost:11434` | none | `num_gpu`, `main_gpu`, `gpu_layers`, `num_thread` |
+
+The mode is always explicit. A cloud failure never becomes a local run, and no
+error path starts the local `ollama` CLI. The API key is read from the
+environment, never written to `config.yml`, never logged, removed from error
+messages, and sent only to the configured host — redirects are not followed.
+
+Error mapping: 401/403 → `AuthenticationError` (no retry), 404 →
+`ModelNotFoundError` (no retry), 429 → `RateLimitError` honouring `Retry-After`,
+408/5xx and connection or timeout errors → bounded retries with backoff. Each
+retry is logged with a note that it can cause additional usage.
+
+## End-to-end flow
 
 ```mermaid
 sequenceDiagram
-  actor User
-  participant GUI as MainWindow
-  participant WRK as GeneratorTask
-  participant CORE as core.generate_test_cases
-  participant AG as AgentLocal
-  participant OLL as Ollama REST
-  participant CLI as Ollama CLI
+    participant U as UI / CLI
+    participant ING as application.ingest
+    participant GEN as application.generate
+    participant VAL as domain.validation
+    participant AD as adapters.ollama
+    participant ST as adapters.persistence
 
-  User->>GUI: Click "Generate"
-  GUI->>WRK: start(pdf, config)
-  WRK->>WRK: Count pages (PyPDF2)
-  WRK->>CORE: generate_test_cases(pdf, config)
-  CORE->>CORE: Extract text with fitz
-  loop For each chunk
-    CORE->>AG: generate(prompt)
-    alt REST available
-      AG->>OLL: POST /api/generate
-      OLL-->>AG: stream tokens
-    else REST fails
-      AG->>CLI: run subprocess
-      CLI-->>AG: stdout text
+    U->>ING: import document(s)
+    ING->>ING: extract text, sections/pages, char offsets
+    ING-->>U: requirements with source spans (+ findings)
+    U->>GEN: generate_drafts(requirements, model)
+    loop per requirement or justified group
+        GEN->>AD: chat(system + user messages, stream=false)
+        AD-->>GEN: ModelReply (text, truncated, done_reason)
+        GEN->>GEN: parse against the versioned contract
+        GEN->>VAL: validate each case against the requirements
+        alt blocking findings and repair budget left
+            GEN->>AD: repair (source + previous answer + findings)
+        else blocking findings and budget exhausted
+            GEN-->>U: unit rejected, kept with its source spans
+        end
     end
-    CORE->>CORE: parse and repair cases
-  end
-  CORE-->>WRK: structured case list
-  WRK-->>GUI: finished(cases)
-  GUI->>GUI: update table model
+    GEN-->>U: run (completed | partial | failed | cancelled)
+    U->>ST: save_run (temp file, atomic replace)
 ```
 
-Steps:
+## Configuration
 
-1. User clicks **Generate**.
-2. GUI launches `GeneratorTask` with PDF/config.
-3. Worker validates PDF (page count).
-4. Worker calls core logic.
-5. Core extracts PDF text and processes chunks.
-6. AgentLocal sends prompts to Ollama (REST or CLI).
-7. Results are parsed and repaired.
-8. Cases returned to worker.
-9. Worker signals GUI.
-10. GUI updates its table.
+`config.yml` holds the mode, host, timeouts, model name, sampling parameters,
+generation limits and portable relative paths. It never holds the API key.
+`bootstrap.py` reads it and wires the concrete adapters;
+`config_models.py` still serves the existing GUI widgets.
 
----
+## Dependencies
 
-## Runtime Deployment
+| Library | Used for |
+| - | - |
+| PySide6 | existing GUI and Qt workers |
+| PyMuPDF | the single PDF text extractor |
+| requests | HTTP transport in the Ollama adapter |
+| pydantic | strict, versioned JSON contracts with precise error paths |
+| pandas, openpyxl | CSV/Excel export |
+| PyYAML | configuration |
+| scikit-learn | optional, only for the legacy RAG option |
 
-```mermaid
-graph TD
-  subgraph Host
-    App[Python app: PySide6 GUI]
-    Deps[Dependencies: PyMuPDF, PyPDF2, pandas, openpyxl, requests, yaml]
-    Oll[Ollama REST API :11434]
-    CLI[ollama CLI]
-  end
+PyPDF2 was removed: PDF reading is unified on PyMuPDF.
 
-  Files[PDFs, config.yml, prompts, assets] --> App
-  App -->|primary HTTP POST| Oll
-  App -->|fallback subprocess| CLI
-  App --> Out[CSV/XLSX]
-```
+## Deliberately not in this delivery
 
-* **Execution**: Entire system runs locally on a host machine.
-* **Dependencies**:
-
-  * PDF parsing: PyMuPDF, PyPDF2
-  * Data export: pandas, openpyxl
-  * Config: yaml
-  * HTTP communication: requests
-* **Integration**: REST (preferred) + CLI fallback.
-* **Inputs**: PDFs, config, prompts.
-* **Outputs**: Structured test cases (in-app + CSV/XLSX).
+Model-assisted requirement segmentation, review and coverage views, project
+persistence with revisions, Excel export of steps and links, streaming, RAG,
+parallelisation, OCR and a GUI rebuild. See the work packages for AP 4 to AP 6.

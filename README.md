@@ -2,7 +2,6 @@
   <h1>AuroraSpecDominion</h1>
 </div>
 
-
 <p align="center">
   <img src="assets/icon.png" alt="logo" width="300">
 </p>
@@ -206,11 +205,11 @@ flowchart TD
 * PySide6
 * pandas
 * openpyxl
-* fitz (PyMuPDF)
-* PyPDF2
+* PyMuPDF (the single PDF text extractor)
 * requests
+* pydantic (strict validation of model answers)
 * yaml
-* scikit-learn (for retrieval augmentation)
+* scikit-learn (optional, only for the legacy retrieval augmentation)
 * tqdm (for optional CLI progress bar)
 
 Install dependencies:
@@ -228,18 +227,14 @@ pip install -r requirements.txt
    ```bash
    python gui.py
    ```
-
 2. Upload a requirements PDF.
-
 3. Adjust parameters like:
 
    * Batch size
    * Combine pages
    * Cases per prompt
    * Parallel prompts
-
 4. Click Generate to run the test-case creation process.
-
 5. Review and export results as `.csv` or `.xlsx`.
 
 ### Automating from scripts / CLI
@@ -307,7 +302,6 @@ behaviour from the GUI or from `config.yml`:
 
 1. Install a GPU-capable Ollama build and vendor drivers (CUDA for NVIDIA,
    ROCm or Metal for AMD or Apple). Follow the official setup guide for your OS.
-
 2. Verify GPU access directly in Ollama (outside of TSG) by running a quick
    prompt and observing the server log (it will mention that layers are being
    loaded onto the GPU), for example:
@@ -315,7 +309,6 @@ behaviour from the GUI or from `config.yml`:
    ```bash
    ollama run llama3:8b "Hello"
    ```
-
 3. In TSG's Model panel enable "GPU acceleration when available" to keep
    inference on the GPU. You can optionally override:
 
@@ -330,6 +323,57 @@ behaviour from the GUI or from `config.yml`:
 
 Disabling the checkbox forces Ollama to stay on the CPU (`num_gpu = 0`). All
 settings persist to `config.yml` so scripted runs use the same hardware profile.
+
+---
+
+## Cloud and local operation (Spec2Test pipeline)
+
+Next to the existing GUI there is a traceable pipeline with requirement capture,
+strict validation and source references. It offers two explicit modes; there is
+no implicit switching between them and no CLI fallback.
+
+| Mode             | Host                       | Authentication                            |
+| ---------------- | -------------------------- | ----------------------------------------- |
+| `ollama_cloud` | `https://ollama.com`     | `Authorization: Bearer $OLLAMA_API_KEY` |
+| `ollama_local` | `http://localhost:11434` | none                                      |
+
+The API key is read from the environment only. It is never written to
+`config.yml`, never logged, removed from error messages, and sent only to the
+configured host; redirects are not followed.
+
+```bash
+export OLLAMA_API_KEY=...          # cloud mode only
+
+# list the models of the configured host and check a name
+python -m spec2test.cli models --mode ollama_cloud --model gpt-oss:120b
+
+# full example run: import, generate, validate, show drafts, store the run
+python -m spec2test.cli run --spec requirements/sw_req_spec_ras.md \
+    --mode ollama_cloud --model gpt-oss:120b --out runs
+
+# offline demonstration without any network or credentials
+python -m spec2test.cli run --spec tests/fixtures/specs/spec_a.md --mode fake
+```
+
+Exit codes: `0` completed, `2` partial, `3` cancelled, `1` failed. A progress
+value of 100 % only means the processing ended - the run status says whether it
+worked.
+
+Note on model names: the cloud API expects the name reported by `/api/tags`
+(for example `gpt-oss:120b`). The local CLI and app show aliases such as
+`gpt-oss:120b-cloud`. The two are never equated automatically; a mismatch is
+reported as a warning.
+
+What the pipeline guarantees:
+
+* no input page is lost by block building, for any block size and overlap;
+* every draft references captured requirements and keeps its source spans;
+* missing limits, DTCs, signals or measurement methods are not invented - they
+  are stored as open questions or explicitly marked proposals;
+* an unknown requirement ID, a missing mandatory step or an invalid type blocks
+  acceptance as a draft; unresolved questions block approval;
+* only a deliberate tester decision sets a case to `approved`; a model answer
+  always starts as `draft`, and an edit after approval creates a new revision.
 
 ---
 
@@ -419,11 +463,29 @@ tsg/
 
 ## Testing
 
-The repository includes unit tests for key parsing and retrieval helpers. Execute them with:
+```bash
+pytest                      # everything except the live test
+pytest tests/test_domain.py tests/test_contracts.py   # no Qt, no network needed
+```
+
+The suite covers the domain rules, the strict contract, block coverage for every
+block size and overlap, document import including a requirement across a page
+boundary, partial failures, bounded repair and cancellation, the HTTP adapter
+against a mock transport (success, missing key, 401/403, 429 with `Retry-After`,
+timeouts, invalid and truncated answers), the layering rules, and an offline
+end-to-end run with a fake model. CI needs no paid cloud calls.
+
+The live test is opt-in, because a real call causes real usage:
 
 ```bash
-pytest
+SPEC2TEST_LIVE=1 SPEC2TEST_LIVE_MODEL=gpt-oss:120b pytest tests/test_live_cloud.py -v
+# local endpoint instead of the cloud:
+SPEC2TEST_LIVE=1 SPEC2TEST_LIVE_MODE=ollama_local \
+  SPEC2TEST_LIVE_MODEL=gpt-oss:120b-cloud pytest tests/test_live_cloud.py -v
 ```
+
+No test asserts on the model's wording or expects identical results at
+temperature zero.
 
 ---
 
@@ -432,12 +494,14 @@ pytest
 * Prompt overrides - choose any prompt file to override the default system prompt from within the GUI.
 * Resilient generation - automatic JSON retry plus self-repair of incomplete fields.
 * Retrieval augmentation - optional TF-IDF retriever selects the most relevant chunks for each prompt.
-* Health checks - Ollama availability is probed before generation, falling back to the CLI if required.
+* Health checks - the endpoint is probed before generation. A failure is reported; the local `ollama` CLI is never started as a fallback.
+* Strict local validation - model answers are checked against a versioned JSON contract, because Ollama Cloud offers no schema-enforced structured outputs.
+* Bounded repair - an invalid answer is repaired at most twice with the original requirement, the previous answer and the concrete findings, then rejected visibly.
 
 ---
 
 ## Notes
 
-* The application assumes a local LLM API is running and accessible via HTTP.
+* The GUI path assumes an Ollama endpoint reachable over HTTP; the cloud mode is selected in `config.yml` or via the CLI.
 * Make sure your LLM supports multi-threading if using the parallel prompts feature.
 * Error handling and logging are included to support debugging and tracking.
