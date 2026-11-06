@@ -11,7 +11,9 @@ from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from typing import Annotated
+
+from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
 from ..domain.models import Severity, ValidationIssue
 
@@ -21,14 +23,38 @@ SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0"})
 _STRICT = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+def _as_text(value: object) -> object:
+    """Accept a measured value written as a number.
+
+    A model writes ``"value": 500`` as often as ``"value": "500"``, and
+    rejecting the whole answer over it costs a full repair cycle. The exact
+    notation is preserved when it is given as text; a number becomes its
+    plain string form. Lists and objects are still refused - they would hide
+    a structural mistake.
+    """
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        text = repr(value)
+        return text[:-2] if text.endswith(".0") else text
+    return value
+
+
+#: a scalar that is stored as text, however the model wrote it
+Scalar = Annotated[str, BeforeValidator(_as_text)]
+
+
 # ------------------------------------------------------------- contract -----
 class MeasurementContract(BaseModel):
     model_config = _STRICT
 
     quantity: str
-    value: str
+    #: ``None`` means: the quantity is named, but the requirement states no
+    #: target value. That is an honest answer and becomes a finding, not a
+    #: reason to reject the whole draft.
+    value: Scalar | None = None
     unit: str | None = None
-    tolerance: str | None = None
+    tolerance: Scalar | None = None
     evidence: str | None = None
 
 

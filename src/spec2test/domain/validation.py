@@ -214,6 +214,15 @@ def _validate_step(
                 "structural expectation without a measurable criterion",
             )
     for i, measurement in enumerate(step.measurements):
+        if measurement.value is None or not str(measurement.value).strip():
+            report.add(
+                "C_MEASUREMENT_WITHOUT_VALUE",
+                Severity.CLARIFICATION,
+                f"{path}.measurements[{i}]",
+                f"{measurement.quantity!r} is named as a quantity to measure, "
+                "but no target value is given. Clarify the value before the "
+                "case is used.",
+            )
         if not measurement.evidence or not measurement.evidence.strip():
             report.add(
                 "C_MEASUREMENT_WITHOUT_EVIDENCE",
@@ -367,6 +376,8 @@ def _unsupported_details(
     for i, expectation in enumerate(case.all_expectations()):
         texts.append((f"{path}.expectations[{i}]", expectation))
     for i, measurement in enumerate(case.all_measurements()):
+        if measurement.value is None:
+            continue
         value = f"{measurement.value} {measurement.unit or ''}".strip()
         texts.append((f"{path}.measurements[{i}]", value))
         if measurement.tolerance:

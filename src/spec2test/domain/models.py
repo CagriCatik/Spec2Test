@@ -178,7 +178,8 @@ class Measurement:
     """A measurable quantity. ``evidence`` must quote the source requirement."""
 
     quantity: str
-    value: str
+    #: ``None``: the quantity is named, no target value is given
+    value: str | None = None
     unit: str | None = None
     tolerance: str | None = None
     evidence: str | None = None

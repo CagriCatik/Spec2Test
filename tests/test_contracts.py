@@ -14,7 +14,13 @@ from spec2test.application.contracts import (
     strip_code_fences,
 )
 from spec2test.application.legacy import parse_legacy_cases
-from spec2test.domain.models import Requirement, ReviewStatus, Severity, SourceSpan
+from spec2test.domain.models import (
+    Requirement,
+    ReviewStatus,
+    Severity,
+    SourceSpan,
+    TestCase,
+)
 from spec2test.domain.validation import validate_test_case
 
 
@@ -260,3 +266,118 @@ def test_the_legacy_parser_extracts_an_array_from_surrounding_prose():
           '"expected_results":["e"],"postconditions":["p"]}]\nHope that helps.'
     result = parse_legacy_cases(raw)
     assert result.ok and len(result.cases) == 1
+
+
+# ------------------------------------------- measured values as numbers ------
+@pytest.mark.parametrize(
+    "written,stored",
+    [
+        ("500", "500"),
+        (500, "500"),
+        (0.2, "0.2"),
+        (-10.5, "-10.5"),
+        (500.0, "500"),
+    ],
+)
+def test_a_measured_value_may_be_written_as_a_number(written, stored):
+    """Half the units of a real run needed a repair over exactly this."""
+    payload = valid_payload(
+        steps=[
+            {
+                "order": 1,
+                "action": "measure",
+                "expectations": ["e"],
+                "measurements": [
+                    {"quantity": "q", "value": written, "unit": "ms"}
+                ],
+            }
+        ]
+    )
+    result = parse_model_response(json.dumps(payload))
+    assert result.ok, result.error_summary()
+    assert result.response.test_cases[0].steps[0].measurements[0].value == stored
+
+
+def test_a_tolerance_may_be_written_as_a_number():
+    payload = valid_payload(
+        steps=[
+            {
+                "order": 1,
+                "action": "measure",
+                "expectations": ["e"],
+                "measurements": [
+                    {"quantity": "q", "value": "500", "tolerance": 5, "unit": "ms"}
+                ],
+            }
+        ]
+    )
+    result = parse_model_response(json.dumps(payload))
+    assert result.ok
+    assert result.response.test_cases[0].steps[0].measurements[0].tolerance == "5"
+
+
+@pytest.mark.parametrize("written", [[1, 2], {"a": 1}])
+def test_a_structure_where_a_value_belongs_is_still_refused(written):
+    payload = valid_payload(
+        steps=[
+            {
+                "order": 1,
+                "action": "measure",
+                "expectations": ["e"],
+                "measurements": [{"quantity": "q", "value": written}],
+            }
+        ]
+    )
+    assert parse_model_response(json.dumps(payload)).outcome is ParseOutcome.SCHEMA_INVALID
+
+
+def test_other_fields_still_reject_a_number():
+    """Only measured values are lenient; a numeric title is a real mistake."""
+    assert parse_model_response(
+        json.dumps(valid_payload(title=17))
+    ).outcome is ParseOutcome.SCHEMA_INVALID
+
+
+def test_a_measurement_without_a_value_is_accepted_and_flagged():
+    """The model naming a quantity without claiming a value is honest.
+
+    Rejecting the draft over it would punish exactly the behaviour the rules
+    ask for; it becomes a clarification instead.
+    """
+    from spec2test.domain.models import Measurement, TestStep
+    from spec2test.domain.validation import validate_test_case
+
+    payload = valid_payload(
+        steps=[
+            {
+                "order": 1,
+                "action": "measure the latency",
+                "expectations": ["the latency is within the limit"],
+                "measurements": [
+                    {"quantity": "response latency", "value": None, "unit": "ms"}
+                ],
+            }
+        ]
+    )
+    result = parse_model_response(json.dumps(payload))
+    assert result.ok, result.error_summary()
+    assert result.response.test_cases[0].steps[0].measurements[0].value is None
+
+    drafted = TestCase(
+        case_id="TC-1",
+        title="t",
+        objective="o",
+        requirement_ids=("REQ-1",),
+        steps=(
+            TestStep(
+                1,
+                "measure",
+                ("the latency is within the limit",),
+                (Measurement(quantity="response latency", value=None, unit="ms"),),
+            ),
+        ),
+    )
+    report = validate_test_case(drafted, [requirement()])
+    assert "C_MEASUREMENT_WITHOUT_VALUE" in report.codes()
+    assert report.blocks_draft is False, "it is a clarification, not a rejection"
+    assert report.blocks_approval is True

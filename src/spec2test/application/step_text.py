@@ -36,7 +36,11 @@ def steps_to_text(steps: Sequence[TestStep]) -> str:
         for expectation in step.expectations:
             lines.append(f"{INDENT}- {expectation}")
         for measurement in step.measurements:
-            value = f"{measurement.value} {measurement.unit or ''}".strip()
+            value = (
+                f"{measurement.value} {measurement.unit or ''}".strip()
+                if measurement.value is not None
+                else "value open"
+            )
             lines.append(f"{INDENT}- {measurement.quantity} = {value}")
     return "\n".join(lines)
 

@@ -84,3 +84,18 @@ def test_measurements_are_shown_but_not_reconstructed():
     parsed = text_to_steps(text)
     assert parsed[0].measurements == ()
     assert len(parsed[0].expectations) == 2, "the measurement line stays as text"
+
+
+def test_a_quantity_without_a_value_is_named_as_open():
+    """The reviewer must see the gap, not the word 'None'."""
+    steps = (
+        TestStep(
+            1,
+            "measure the response latency",
+            ("the latency is within the limit",),
+            (Measurement("response latency", None, "ms"),),
+        ),
+    )
+    text = steps_to_text(steps)
+    assert "None" not in text
+    assert "response latency = value open" in text
