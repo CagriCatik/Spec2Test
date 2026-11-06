@@ -461,6 +461,20 @@ A credential or host misconfiguration stops the whole run after the first
 failure instead of repeating it for every requirement; the remaining
 requirements are listed as `NOT STARTED`.
 
+A run writes four files into `--out` (default `./runs`):
+
+| File | Content |
+| - | - |
+| `<spec-id>.md` | the test specification, for reading and review |
+| `<spec-id>.json` | the same, structured, for exchange |
+| `<spec-id>.xlsx` | separate sheets for cases, steps, links, questions, sources |
+| `<spec-id>.s2t.json` | the project: reopen it in the window to review and approve |
+| `run-<id>.json` | the raw run with every model answer and finding |
+
+`--title` and `--spec-id` set the heading data, `--no-spec` writes only the
+run file. A complete example output is in
+[`docs/examples/`](docs/examples/TS-BAL-001-example.md).
+
 Exit codes: `0` completed, `2` partial, `3` cancelled, `1` failed. A progress
 value of 100 % only means the processing ended - the run status says whether it
 worked. A run is `completed` only when every planned requirement was processed:

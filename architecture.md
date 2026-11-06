@@ -370,6 +370,10 @@ It distinguishes three things a reader would otherwise confuse:
 * requirements of the knowledge base that were **never in scope** - context,
   not a gap.
 
+Both entry points produce it: `spec2test run` writes Markdown, JSON, Excel and
+the project file next to the run, and the window exports the same object from
+its **Test specification** tab.
+
 `adapters/export/specification.py` renders the same object as Markdown, JSON
 and an Excel workbook with separate sheets for test cases, test steps,
 requirement links, open questions and context sources. An action and its
