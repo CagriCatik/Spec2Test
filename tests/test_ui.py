@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import textwrap
 import unicodedata
 from pathlib import Path
 
@@ -872,3 +874,212 @@ def test_reopening_a_project_says_where_the_scope_list_came_from(
     finally:
         second._project_dirty = False
         second.close()
+
+
+# =====================================================================
+# every action the user can reach must actually run
+# =====================================================================
+@pytest.fixture
+def answered_file_dialogs(monkeypatch, tmp_path, spec_a):
+    """Answer every file dialog without opening one."""
+    import spec2test.ui.main_window as module
+
+    guidance = tmp_path / "guidance.md"
+    guidance.write_text("Prefer HiL scenarios.\n", encoding="utf-8")
+    target = tmp_path / "written.md"
+    monkeypatch.setattr(
+        module.QFileDialog, "getOpenFileNames",
+        staticmethod(lambda *a, **k: ([str(spec_a)], "")),
+    )
+    monkeypatch.setattr(
+        module.QFileDialog, "getOpenFileName",
+        staticmethod(lambda *a, **k: (str(guidance), "")),
+    )
+    monkeypatch.setattr(
+        module.QFileDialog, "getSaveFileName",
+        staticmethod(lambda *a, **k: (str(target), "")),
+    )
+    monkeypatch.setattr(
+        module.QFileDialog, "getExistingDirectory",
+        staticmethod(lambda *a, **k: str(spec_a.parent)),
+    )
+    return {"guidance": guidance, "target": target}
+
+
+@pytest.fixture
+def slot_errors(monkeypatch):
+    """Qt swallows an exception raised inside a slot.
+
+    ``action.trigger()`` and ``button.click()`` return normally and the
+    traceback only reaches sys.excepthook, so a test that calls them and
+    expects a raise passes against broken code.
+    """
+    seen: list[str] = []
+    monkeypatch.setattr(
+        sys, "excepthook", lambda kind, value, tb: seen.append(f"{kind.__name__}: {value}")
+    )
+    return seen
+
+
+def test_every_file_menu_action_runs(window, answered_file_dialogs, slot_errors):
+    """A widget dropped in a redesign left five actions raising AttributeError.
+
+    The guidance Load… and Save… buttons crashed on every use; so did the
+    whole window when config.yml named a document.
+    """
+    triggered: list[str] = []
+    for action in window.menuBar().actions():
+        for entry in (action.menu().actions() if action.menu() else []):
+            if entry.isSeparator() or entry.text() in ("Quit", "Parameter reference"):
+                continue
+            triggered.append(entry.text())
+            entry.trigger()
+    assert len(triggered) >= 6, triggered
+    assert slot_errors == [], f"{triggered} -> {slot_errors}"
+
+
+def test_the_guidance_buttons_run(window, answered_file_dialogs, slot_errors):
+    window.btn_guidance_load.click()
+    assert slot_errors == [], slot_errors
+    assert "Prefer HiL scenarios" in window.guidance.toPlainText()
+    window.btn_guidance_save.click()
+    assert slot_errors == [], slot_errors
+    assert answered_file_dialogs["target"].read_text(encoding="utf-8").strip() == (
+        "Prefer HiL scenarios."
+    )
+
+
+def test_no_handler_writes_to_a_widget_that_was_never_built(window):
+    """Every self.<widget> a handler touches must exist on the window."""
+    import ast
+    import inspect
+
+    source = inspect.getsource(type(window))
+    tree = ast.parse(textwrap.dedent(source))
+    built = set(dir(window))
+    missing: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+            and node.attr not in built
+        ):
+            missing.add(node.attr)
+    assert missing == set(), f"handlers reference attributes that do not exist: {missing}"
+
+
+# =====================================================================
+# a configured document and guidance file
+# =====================================================================
+def _config_file(path, spec, guidance):
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "paths": {"pdf_path": str(spec), "prompt_path": str(guidance)},
+                "model": {"name": "configured:1b"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_the_window_starts_with_a_document_named_in_the_config(
+    app, tmp_path, spec_a
+):
+    """'config.yml names a document' crashed the whole startup."""
+    guidance = tmp_path / "guidance.md"
+    guidance.write_text("Prefer HiL scenarios.\n", encoding="utf-8")
+    config = _config_file(tmp_path / "config.yml", spec_a, guidance)
+
+    window = MainWindow(config_path=config)
+    try:
+        assert window.specifications() == [spec_a]
+        assert spec_a.name in window.scope.lbl_base.text()
+    finally:
+        window._project_dirty = False
+        window.close()
+
+
+def test_a_guidance_file_from_the_config_reaches_the_prompt(
+    app, tmp_path, spec_a, monkeypatch
+):
+    """The path was remembered and the file never read, so it did nothing."""
+    guidance = tmp_path / "guidance.md"
+    guidance.write_text("Prefer HiL scenarios for this project.\n", encoding="utf-8")
+    config = _config_file(tmp_path / "config.yml", spec_a, guidance)
+
+    window = MainWindow(config_path=config)
+    try:
+        assert "Prefer HiL scenarios" in window.guidance.toPlainText()
+        assert guidance.name in window.lbl_guidance.text()
+
+        model = RuleBasedFakeModel()
+        monkeypatch.setattr(workers, "build_model", lambda *a, **k: model)
+        window._threadpool = SynchronousPool()
+        window.model_name.setCurrentText("fake:1b")
+        window.start_run()
+        system = model.calls[0][0].content
+        assert "Prefer HiL scenarios for this project" in system
+        assert "schema_version" in system, "the contract rules were replaced"
+    finally:
+        window._project_dirty = False
+        window.close()
+
+
+def test_a_guidance_file_that_cannot_be_read_does_not_stop_the_window(
+    app, tmp_path, spec_a
+):
+    config = _config_file(tmp_path / "config.yml", spec_a, tmp_path / "gone.md")
+    window = MainWindow(config_path=config)
+    try:
+        assert "could not be read" in window.lbl_guidance.text()
+        assert window.guidance.toPlainText() == ""
+    finally:
+        window._project_dirty = False
+        window.close()
+
+
+def test_the_open_project_shortcut_opens_a_dialog_instead_of_Path_False(
+    window, monkeypatch, slot_errors
+):
+    """QAction.triggered carries 'checked'; it landed in the path argument."""
+    import spec2test.ui.main_window as module
+
+    asked: list[bool] = []
+
+    def dialog(*_a, **_k):
+        asked.append(True)
+        return ("", "")
+
+    monkeypatch.setattr(module.QFileDialog, "getOpenFileName", staticmethod(dialog))
+    entry = next(
+        e
+        for a in window.menuBar().actions()
+        for e in (a.menu().actions() if a.menu() else [])
+        if e.text() == "Open project…"
+    )
+    entry.trigger()
+
+    assert slot_errors == [], slot_errors
+    assert asked == [True], "the menu did not reach the file dialog"
+
+
+def test_open_project_still_takes_a_path(window, tmp_path, spec_a, fake_model):
+    window._spec_paths = [spec_a]
+    window.start_run()
+    from spec2test.adapters.persistence.project_store import ProjectStore
+
+    target = tmp_path / "p.s2t.json"
+    window._write_project(ProjectStore(target))
+    window._project_dirty = False
+    window.close()
+
+    for given in (target, str(target)):
+        other = MainWindow(config_path=tmp_path / "c2.yml")
+        try:
+            assert other.open_project(given) is True, given
+        finally:
+            other._project_dirty = False
+            other.close()

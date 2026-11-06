@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableView,
@@ -200,10 +199,10 @@ class MainWindow(QMainWindow):
         file_menu = bar.addMenu("&File")
         for title, slot, shortcut in (
             ("Open specification…", self.select_specifications, "Ctrl+O"),
-            ("Open guidance file…", self.select_guidance, None),
+            ("Open guidance file…", self.load_guidance, None),
         ):
             action = QAction(title, self)
-            action.triggered.connect(slot)
+            action.triggered.connect(lambda _checked=False, s=slot: s())
             if shortcut:
                 action.setShortcut(shortcut)
             file_menu.addAction(action)
@@ -214,7 +213,7 @@ class MainWindow(QMainWindow):
             ("Save project as…", self.save_project_as, "Ctrl+Shift+S"),
         ):
             action = QAction(title, self)
-            action.triggered.connect(slot)
+            action.triggered.connect(lambda _checked=False, s=slot: s())
             if shortcut:
                 action.setShortcut(shortcut)
             file_menu.addAction(action)
@@ -301,6 +300,11 @@ class MainWindow(QMainWindow):
         self.guidance.setMaximumHeight(120)
         layout.addWidget(self.guidance)
 
+        self.lbl_guidance = QLabel("No guidance file")
+        self.lbl_guidance.setWordWrap(True)
+        self.lbl_guidance.setProperty("role", "hint")
+        layout.addWidget(self.lbl_guidance)
+
         row = QHBoxLayout()
         self.btn_guidance_load = QPushButton("Load…")
         self.btn_guidance_save = QPushButton("Save…")
@@ -310,33 +314,6 @@ class MainWindow(QMainWindow):
         row.addWidget(self.btn_guidance_load)
         row.addWidget(self.btn_guidance_save)
         layout.addLayout(row)
-        return group
-
-    def _group_documents(self) -> QGroupBox:
-        group = QGroupBox("Input")
-        form = QFormLayout(group)
-
-        self.lbl_specs = QLabel("No document selected")
-        self.lbl_specs.setWordWrap(True)
-        btn_specs = QPushButton("Choose…")
-        btn_specs.clicked.connect(self.select_specifications)
-        form.addRow(self._with_button(self.lbl_specs, btn_specs))
-        hint = QLabel("PDF, TXT or Markdown. Several files are allowed.")
-        hint.setProperty("role", "hint")
-        form.addRow(hint)
-
-        self.lbl_guidance = QLabel("No guidance file")
-        self.lbl_guidance.setWordWrap(True)
-        btn_guidance = QPushButton("Choose…")
-        btn_guidance.clicked.connect(self.select_guidance)
-        form.addRow(self._with_button(self.lbl_guidance, btn_guidance))
-        guidance_hint = QLabel(
-            "Optional project guidance. It is added to the generation rules "
-            "and cannot override them."
-        )
-        guidance_hint.setWordWrap(True)
-        guidance_hint.setProperty("role", "hint")
-        form.addRow(guidance_hint)
         return group
 
     def _group_endpoint(self) -> QGroupBox:
@@ -429,16 +406,6 @@ class MainWindow(QMainWindow):
             widget.setToolTip(tip)
             form.addRow(label, widget)
         return group
-
-    @staticmethod
-    def _with_button(label: QLabel, button: QPushButton) -> QWidget:
-        wrapper = QWidget()
-        row = QHBoxLayout(wrapper)
-        row.setContentsMargins(0, 0, 0, 0)
-        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        row.addWidget(label, 1)
-        row.addWidget(button)
-        return wrapper
 
     # ------------------------------------------------------- results ---
     def _build_results_panel(self) -> QWidget:
@@ -619,10 +586,9 @@ class MainWindow(QMainWindow):
 
         if cfg.paths.pdf_path:
             self._spec_paths = [Path(cfg.paths.pdf_path)]
-            self.lbl_specs.setText(Path(cfg.paths.pdf_path).name)
+            self.scope.set_sources(None, list(self._spec_paths))
         if cfg.paths.prompt_path:
-            self._guidance_path = Path(cfg.paths.prompt_path)
-            self.lbl_guidance.setText(Path(cfg.paths.prompt_path).name)
+            self._adopt_guidance(Path(cfg.paths.prompt_path))
         self._update_gpu_controls(self.use_gpu.isChecked())
 
     def cloud_config(self, *, job_timeout_s: float | None = None) -> CloudConfig:
@@ -804,23 +770,11 @@ class MainWindow(QMainWindow):
         if not names:
             return
         self._spec_paths = [Path(name) for name in names]
-        self.lbl_specs.setText(
-            self._spec_paths[0].name
-            if len(self._spec_paths) == 1
-            else f"{len(self._spec_paths)} documents"
-        )
+        # the panel is the one place that shows what was chosen
+        self.scope.set_sources(None, list(self._spec_paths))
         for path in self._spec_paths:
             self.log_line(f"Selected {path}")
-
-    def select_guidance(self) -> None:
-        name, _ = QFileDialog.getOpenFileName(
-            self, "Select project guidance file", filter="Text (*.txt *.md);;All files (*)"
-        )
-        if not name:
-            return
-        self._guidance_path = Path(name)
-        self.lbl_guidance.setText(self._guidance_path.name)
-        self.log_line(f"Guidance file: {self._guidance_path}")
+        self.build_index(rebuild=False)
 
     # =================================================================
     # knowledge base
@@ -895,20 +849,35 @@ class MainWindow(QMainWindow):
     # =================================================================
     # guidance
     # =================================================================
+    def _adopt_guidance(self, path: Path) -> bool:
+        """Read a guidance file into the editor.
+
+        The path alone does nothing: generation uses the text in the editor.
+        A configured prompt_path that is never read is guidance the user
+        believes is in effect while it is not.
+        """
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            self.lbl_guidance.setText(f"{path.name} could not be read")
+            self.log_line(f"Guidance file {path} could not be read: {exc}")
+            return False
+        self.guidance.setPlainText(text)
+        self._guidance_path = path
+        self.lbl_guidance.setText(f"{path.name} ({len(text.splitlines())} line(s))")
+        self.log_line(f"Guidance loaded from {path}")
+        return True
+
     def load_guidance(self) -> None:
         name, _ = QFileDialog.getOpenFileName(
             self, "Load project guidance", filter="Text (*.txt *.md);;All files (*)"
         )
         if not name:
             return
-        try:
-            self.guidance.setPlainText(Path(name).read_text(encoding="utf-8"))
-        except OSError as exc:
-            QMessageBox.critical(self, "Could not read the file", str(exc))
-            return
-        self._guidance_path = Path(name)
-        self.lbl_guidance.setText(Path(name).name)
-        self.log_line(f"Guidance loaded from {name}")
+        if not self._adopt_guidance(Path(name)):
+            QMessageBox.critical(
+                self, "Could not read the file", f"{name} could not be read."
+            )
 
     def save_guidance(self) -> None:
         name, _ = QFileDialog.getSaveFileName(
@@ -923,7 +892,10 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Could not write the file", str(exc))
             return
         self._guidance_path = Path(name)
-        self.lbl_guidance.setText(Path(name).name)
+        self.lbl_guidance.setText(
+            f"{Path(name).name} "
+            f"({len(self.guidance.toPlainText().splitlines())} line(s))"
+        )
         self.log_line(f"Guidance saved to {name}")
 
     # =================================================================
@@ -1487,8 +1459,12 @@ class MainWindow(QMainWindow):
     # projects
     # =================================================================
     def open_project(self, path: Path | str | None = None) -> bool:
-        """Load a saved project: sources, drafts, findings and decisions."""
-        if path is None:
+        """Load a saved project: sources, drafts, findings and decisions.
+
+        ``path`` may also arrive as the ``checked`` flag of a QAction, which
+        is why anything falsy means "ask the user" rather than Path(False).
+        """
+        if not path or isinstance(path, bool):
             name, _ = QFileDialog.getOpenFileName(
                 self,
                 "Open project",
