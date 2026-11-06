@@ -6,6 +6,7 @@ document can supply context without becoming a test target.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -26,6 +27,32 @@ from PySide6.QtWidgets import (
 )
 
 ALL_DOCUMENTS = "All documents"
+
+#: ``* **Title:** Power-On Bootstrapping`` - the one line worth showing
+_TITLE_FIELD = re.compile(r"\*\*Title:?\*\*:?\s*(.+)", re.IGNORECASE)
+_MARKUP = re.compile(r"[*`_#]+")
+
+
+def summarise_requirement(requirement, limit: int = 110) -> str:
+    """One readable line for a requirement, without its own ID or markup.
+
+    The raw text of a structured requirement starts with its external ID and
+    a Markdown field list, so the plain first 110 characters read as
+    ``BMS-REQ-SYS-0010 * **Tit`` next to the very same ID.
+    """
+    text = requirement.text or ""
+    label = requirement.external_id or ""
+    match = _TITLE_FIELD.search(text)
+    if match:
+        summary = match.group(1)
+    else:
+        body = text.strip()
+        if label and body.startswith(label):
+            body = body[len(label):].lstrip(" :-\n")
+        summary = body
+    summary = _MARKUP.sub("", summary)
+    summary = " ".join(summary.split())
+    return summary[:limit]
 
 
 class ScopePanel(QWidget):
@@ -145,6 +172,22 @@ class ScopePanel(QWidget):
             )
         self.lbl_index.setText(text)
 
+    def show_project_source(self, name: str, documents: int, requirements: int) -> None:
+        """State that the scope list came from a project, not from an index.
+
+        Without this the panel still reads "Index: not built yet" next to a
+        full list of restored requirements.
+        """
+        self.lbl_base.setText(
+            f"Requirements restored from the project '{name}' "
+            f"({documents} document(s))"
+        )
+        self.lbl_index.setText(
+            f"Index: not built in this window. {requirements} requirement(s) come "
+            "from the project. Choose the knowledge base and update the index "
+            "before a new run uses context."
+        )
+
     def set_busy(self, busy: bool) -> None:
         for button in (self.btn_build, self.btn_update, self.btn_folder, self.btn_files):
             button.setEnabled(not busy)
@@ -187,8 +230,8 @@ class ScopePanel(QWidget):
             haystack = f"{label} {requirement.text}".lower()
             if needle and needle not in haystack:
                 continue
-            summary = " ".join(requirement.text.split())[:110]
-            item = QListWidgetItem(f"{label} - {summary}")
+            summary = summarise_requirement(requirement)
+            item = QListWidgetItem(f"{label} - {summary}" if summary else label)
             item.setData(Qt.UserRole, requirement.requirement_id)
             item.setToolTip(requirement.text[:600])
             self.requirements.addItem(item)

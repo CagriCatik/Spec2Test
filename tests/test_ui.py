@@ -675,3 +675,200 @@ def test_a_closed_window_does_not_break_a_pending_request(window, monkeypatch):
             raise RuntimeError("Signal source has been deleted")
 
     task._emit(Boom(), ["x"])  # must not raise
+
+
+# =====================================================================
+# scope larger than the budget
+# =====================================================================
+def _wide_scope(window, count=136):
+    ids = [f"REQ-{i:04d}" for i in range(count)]
+    window._catalogue = []
+    window.scope.selected_ids = lambda: list(ids)
+    return ids
+
+
+def test_a_scope_larger_than_the_budget_is_confirmed_first(
+    window, spec_a, monkeypatch, recording_build_model
+):
+    """136 requirements against the 900 s default stopped early, silently."""
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: (asked.append(a[2]), QMessageBox.No)[1]),
+    )
+    _wide_scope(window)
+    window.job_timeout.setValue(900)
+    window.group_size.setValue(1)
+    window._spec_paths = [spec_a]
+
+    window.start_run()
+
+    assert asked, "the window started the run without warning"
+    assert "25 minutes" in asked[0]
+    assert "15 minutes" in asked[0]
+    assert "not started" in asked[0]
+    assert recording_build_model == {}, "the declined run started anyway"
+    assert window.btn_run.isEnabled(), "the run button stayed disabled"
+
+
+def test_the_warning_can_be_accepted(window, spec_a, monkeypatch, recording_build_model):
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes)
+    )
+    _wide_scope(window)
+    window.job_timeout.setValue(900)
+    window.group_size.setValue(1)
+    window._spec_paths = [spec_a]
+
+    window.start_run()
+
+    assert recording_build_model.get("mode"), "the accepted run did not start"
+
+
+def test_a_scope_inside_the_budget_asks_nothing(
+    window, spec_a, monkeypatch, recording_build_model
+):
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: (asked.append(a[2]), QMessageBox.Yes)[1]),
+    )
+    _wide_scope(window, count=12)
+    window.job_timeout.setValue(900)
+    window.group_size.setValue(1)
+    window._spec_paths = [spec_a]
+
+    window.start_run()
+
+    assert asked == [], f"asked without need: {asked}"
+    assert recording_build_model.get("mode"), "the run did not start"
+
+
+def test_grouping_requirements_shrinks_the_estimate(
+    window, spec_a, monkeypatch, recording_build_model
+):
+    """A larger group size means fewer requests, so the scope can fit."""
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        staticmethod(lambda *a, **k: (asked.append(a[2]), QMessageBox.Yes)[1]),
+    )
+    _wide_scope(window, count=80)
+    window.job_timeout.setValue(900)
+    window.group_size.setValue(4)
+    window._spec_paths = [spec_a]
+
+    window.start_run()
+
+    assert asked == [], "20 grouped requests fit the budget"
+
+
+def test_the_draft_tree_names_a_missing_value_instead_of_none(window):
+    """A quantity without a value must not read as 'None ms' in the tree."""
+    from spec2test.domain.models import Measurement, TestCase, TestStep
+
+    case = TestCase(
+        case_id="TC-1",
+        title="t",
+        objective="o",
+        requirement_ids=("REQ-1",),
+        steps=(
+            TestStep(
+                1,
+                "measure the response latency",
+                ("the latency is within the limit",),
+                (Measurement("response latency", None, "ms"),),
+            ),
+        ),
+    )
+    window._render_drafts([case])
+    labels: list[str] = []
+
+    def walk(item):
+        for i in range(item.childCount()):
+            child = item.child(i)
+            labels.append(child.text(0))
+            walk(child)
+
+    for i in range(window.drafts.topLevelItemCount()):
+        top = window.drafts.topLevelItem(i)
+        labels.append(top.text(0))
+        walk(top)
+
+    measurement_labels = [line for line in labels if "response latency" in line]
+    assert measurement_labels, f"the measurement is not shown: {labels}"
+    assert not any("None" in line for line in measurement_labels), measurement_labels
+    assert any("value open" in line for line in measurement_labels), measurement_labels
+
+
+# =====================================================================
+# the scope list after a project is reopened
+# =====================================================================
+def _structured_requirement(external_id="BMS-REQ-SYS-0010"):
+    from spec2test.domain.models import Requirement, SourceSpan
+
+    text = (
+        f"{external_id}\n"
+        "* **Title:** Power-On Bootstrapping and Self-Test Sequence\n"
+        "* **ASIL Level:** ASIL D\n"
+        "* `KL30_Voltage` (Unit: `mV`, Range: `0..18000`)\n"
+    )
+    return Requirement(
+        requirement_id="REQ-1",
+        text=text,
+        external_id=external_id,
+        spans=(SourceSpan("01_system.md", 0, len(text), text, section="1 Scope"),),
+    )
+
+
+def test_the_scope_list_shows_the_title_not_the_raw_markup(window):
+    """The list read 'BMS-REQ-SYS-0010 - BMS-REQ-SYS-0010 * **Tit'."""
+    window.scope.set_requirements([_structured_requirement()])
+    label = window.scope.requirements.item(0).text()
+    assert label == (
+        "BMS-REQ-SYS-0010 - Power-On Bootstrapping and Self-Test Sequence"
+    ), label
+
+
+def test_a_requirement_without_a_title_field_loses_its_repeated_id(window):
+    from spec2test.domain.models import Requirement, SourceSpan
+
+    text = "SYS-REQ-0001: The system shall react within 100 ms."
+    requirement = Requirement(
+        requirement_id="REQ-2",
+        text=text,
+        external_id="SYS-REQ-0001",
+        spans=(SourceSpan("spec.md", 0, len(text), text, section="1"),),
+    )
+    window.scope.set_requirements([requirement])
+    label = window.scope.requirements.item(0).text()
+    assert label == "SYS-REQ-0001 - The system shall react within 100 ms.", label
+
+
+def test_reopening_a_project_says_where_the_scope_list_came_from(
+    window, spec_a, fake_model, tmp_path
+):
+    """The panel still claimed 'Index: not built yet' next to 136 entries."""
+    window._spec_paths = [spec_a]
+    window.start_run()
+    target = tmp_path / "project.s2t.json"
+    window._write_project(__import__(
+        "spec2test.adapters.persistence.project_store", fromlist=["ProjectStore"]
+    ).ProjectStore(target))
+    window._project_dirty = False
+    window.close()
+
+    second = MainWindow(config_path=tmp_path / "second.yml")
+    try:
+        assert second.open_project(target)
+        assert second.scope.requirements.count() > 0
+        index_text = second.scope.lbl_index.text()
+        assert "not built yet" not in index_text, index_text
+        assert "from the project" in index_text, index_text
+        assert "project" in second.scope.lbl_base.text().lower()
+    finally:
+        second._project_dirty = False
+        second.close()

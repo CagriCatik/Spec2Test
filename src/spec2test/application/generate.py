@@ -62,6 +62,17 @@ class GenerationSettings:
     max_search_items: int = 3
 
 
+#: measured mean duration of one unit against a cloud model, for the estimate
+TYPICAL_SECONDS_PER_UNIT = 11.0
+
+
+def estimate_runtime(unit_count: int, settings: GenerationSettings) -> tuple[float, bool]:
+    """Rough runtime for a planned scope, and whether the budget covers it."""
+    expected = unit_count * TYPICAL_SECONDS_PER_UNIT
+    budget = settings.job_timeout_s
+    return expected, budget is None or expected <= budget
+
+
 @dataclass
 class ProgressUpdate:
     """``fraction == 1.0`` means the processing finished - not that it worked."""
@@ -192,6 +203,15 @@ def generate_drafts(
         f"run {run.run_id}: {len(requirements)} requirement(s) in {len(units)} unit(s) "
         f"via {descriptor.mode} {descriptor.model} at {descriptor.endpoint}",
     )
+    expected, fits = estimate_runtime(len(units), settings)
+    if not fits:
+        _log(
+            log,
+            f"warning: {len(units)} unit(s) need about {expected / 60:.0f} min, "
+            f"the job budget is {(settings.job_timeout_s or 0) / 60:.0f} min. "
+            "The run will stop early and report the rest as not started. "
+            "Raise generation.job_timeout_s or narrow the scope.",
+        )
 
     for index, unit in enumerate(units, 1):
         if should_cancel and should_cancel():
@@ -552,6 +572,7 @@ def _questions_from_findings(
 
 __all__ = [
     "GenerationSettings",
+    "estimate_runtime",
     "new_run_id",
     "ProgressUpdate",
     "RunStatus",

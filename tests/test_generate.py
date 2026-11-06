@@ -13,6 +13,8 @@ from spec2test.application.contracts import SCHEMA_VERSION
 from spec2test.application.generate import (
     GenerationSettings,
     ProgressUpdate,
+    TYPICAL_SECONDS_PER_UNIT,
+    estimate_runtime,
     generate_drafts,
     plan_units,
 )
@@ -405,3 +407,38 @@ def test_a_fatal_error_reports_progress_as_stopped():
     )
     assert updates[-1].note == "stopped"
     assert updates[-1].percent == 100
+
+
+# ------------------------------------------------- the runtime estimate ------
+def test_a_scope_within_the_budget_is_reported_as_fitting():
+    expected, fits = estimate_runtime(12, GenerationSettings(job_timeout_s=900))
+    assert fits
+    assert expected == pytest.approx(12 * TYPICAL_SECONDS_PER_UNIT)
+
+
+def test_a_full_knowledge_base_does_not_fit_the_default_budget():
+    """136 requirements against the 900 s default: the real case that failed."""
+    expected, fits = estimate_runtime(136, GenerationSettings(job_timeout_s=900))
+    assert not fits
+    assert expected / 60 > 20
+
+
+def test_without_a_budget_every_scope_fits():
+    _expected, fits = estimate_runtime(5000, GenerationSettings(job_timeout_s=None))
+    assert fits
+
+
+def test_the_run_log_warns_before_a_scope_that_cannot_finish():
+    """The warning must be in the log, not only in the interface."""
+    requirements = [requirement(f"REQ-{i}", f"SYS-REQ-{i:04d}") for i in range(1, 5)]
+    lines: list[str] = []
+    generate_drafts(
+        requirements,
+        RuleBasedFakeModel(),
+        settings=GenerationSettings(job_timeout_s=1.0, group_size=1),
+        log=lines.append,
+    )
+    warnings = [line for line in lines if line.startswith("warning:")]
+    assert warnings, "no warning about the budget"
+    assert "stop early" in warnings[0]
+    assert "job_timeout_s" in warnings[0]

@@ -57,6 +57,7 @@ from ..adapters.export import (
     save_xlsx,
     summarise_rows,
 )
+from ..application.generate import estimate_runtime
 from ..application.specification import build_specification
 from ..adapters.persistence.project_store import (
     PROJECT_SUFFIX,
@@ -953,6 +954,25 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No model", "Enter or select a model name first.")
             return
 
+        settings = generation_settings_from_config(self.collect_config())
+        unit_count = max(
+            1, -(-len(scope_ids or self._catalogue or [1]) // settings.group_size)
+        )
+        expected, fits = estimate_runtime(unit_count, settings)
+        if not fits:
+            answer = QMessageBox.question(
+                self,
+                "Scope larger than the budget",
+                f"{unit_count} request(s) need about {expected / 60:.0f} minutes, "
+                f"the job budget is {(settings.job_timeout_s or 0) / 60:.0f} "
+                "minutes.\n\nThe run would stop early and report the rest as "
+                "not started.\n\nStart anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
         QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
         self.progress.setValue(0)
         self._start_time = time.perf_counter()
@@ -1170,6 +1190,8 @@ class MainWindow(QMainWindow):
                     for measurement in step.measurements:
                         value = (
                             f"{measurement.value} {measurement.unit or ''}".strip()
+                            if measurement.value is not None
+                            else "value open"
                         )
                         node.addChild(
                             QTreeWidgetItem(
@@ -1510,6 +1532,9 @@ class MainWindow(QMainWindow):
         if project.requirements:
             self._catalogue = list(project.requirements)
             self.scope.set_requirements(self._catalogue)
+            self.scope.show_project_source(
+                project.name, len(project.documents), len(project.requirements)
+            )
         self._fill_summary()
         self._enable_exports(bool(self._cases))
         self.review.show_case(project, None)
