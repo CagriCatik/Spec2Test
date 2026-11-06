@@ -567,3 +567,29 @@ def test_a_value_taken_only_from_the_context_is_caught_end_to_end(tmp_path):
     )
     allowed, _report = approval_report(project, run.test_cases[0].case_id)
     assert allowed is False
+
+
+def test_the_prompt_forbids_treating_context_as_permission_to_guess(tmp_path):
+    """Measured behaviour: with context the model asked fewer questions and
+    stated values the context did not contain. The rule says so explicitly."""
+    from spec2test.application.prompts import (
+        SYSTEM_PROMPT,
+        build_generation_messages,
+    )
+
+    requirement_under_test = requirement("R1", "SYS-REQ-0001", "react quickly.")
+    item = ContextItem(
+        requirement_id="R2",
+        external_id="SYS-REQ-0002",
+        text="SYS-REQ-0002: unrelated background.",
+        document_id="doc-2",
+    )
+    messages = build_generation_messages(
+        [requirement_under_test], max_cases=1, context=[item]
+    )
+
+    assert "Context never reduces your duty to ask" in SYSTEM_PROMPT
+    collapsed = " ".join(SYSTEM_PROMPT.split())
+    assert "is not permission to fill a gap from your own knowledge" in collapsed
+    user = messages[1].content
+    assert "does not make it acceptable to guess" in user

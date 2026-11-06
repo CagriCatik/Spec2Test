@@ -8,7 +8,7 @@ from ..domain.models import Requirement, ValidationIssue
 from .contracts import SCHEMA_VERSION
 from .ports import ChatMessage
 
-PROMPT_VERSION = "l1-test-draft-3"
+PROMPT_VERSION = "l1-test-draft-4"
 
 GUIDANCE_HEADER = """\
 === PROJECT GUIDANCE (additional, lower precedence) ===
@@ -46,6 +46,11 @@ Hard rules:
    context requirement, and never take a value from it unless the requirement
    under test asks for that value. If the two disagree, do not choose: raise
    an open question naming both sources.
+10. Context never reduces your duty to ask. If a value, a signal name, a bit
+   position, an enum value or a measurement method is missing, it stays an
+   open question even when supporting context is present - unless that
+   context states it literally. Having more text in front of you is not
+   permission to fill a gap from your own knowledge.
 
 Structure of each test case:
   title, objective, requirement_refs (list of strings),
@@ -119,7 +124,8 @@ def build_generation_messages(
             "are background only: do not write test cases for them, and use a "
             "value from them only where the requirement under test asks for it. "
             "Where they disagree with the requirement under test, raise an open "
-            "question instead of choosing.\n\n"
+            "question instead of choosing. The presence of this context does "
+            "not make it acceptable to guess anything it does not state.\n\n"
             "=== BEGIN SUPPORTING CONTEXT (background, not a test target) ===\n"
             f"{_context_block(context)}\n"
             "=== END SUPPORTING CONTEXT ===\n\n"

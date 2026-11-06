@@ -79,14 +79,47 @@ Technical usefulness of the drafts and the relevance of the retrieved
 passages are **pending**: no tester reviewed these runs, and no human judgement
 is invented here. `review-list.md` names the pairs and the questions to decide.
 
+## The dangerous part of the result
+
+"Fewer open questions" looked like an improvement and was not. For
+`BMS-REQ-THM-0401` the model asked three precise questions **without**
+retrieval:
+
+> What are the numeric enum values for OFF, HEATING, PASSIVE_COOL and
+> ACTIVE_CHILL? Which byte(s) and bit position(s) carry Thermal_Mode_Request?
+> What measurement method verifies the 200 ms latency?
+
+**With** retrieval it asked **none** and stated values instead - "loop period
+of 100 ms ±5 ms", "Coolant_Target_Temperature equals 180". The retrieved
+sections provably contain neither the enum values, nor the CAN identifier, nor
+the signal name. The context did not answer the questions; it only made the
+model confident enough to stop asking.
+
+The validation caught it (`C_UNSUPPORTED_VALUE`, `C_POSSIBLE_VALUE_CONFLICT`),
+which is the point of having it. But it means the headline metric was
+misleading, exactly as predicted when this comparison was planned.
+
+Prompt version `l1-test-draft-4` therefore states that context never reduces
+the duty to ask. A check on the same requirement, two runs: questions went
+from 0 back to 2 and 7, unsupported values to 1. Two runs are an indication,
+not proof - the full comparison has to be repeated with the new prompt.
+
 ## What follows from this
 
 The retriever finds plausible sections - the DTC master table for a diagnostics
 requirement, the CAN-FD message matrix for thermal and charging requirements,
 the interface topography for communication. The drafts mostly ignore them.
 
-That points at generation and validation rather than at the search: before
-adding embeddings, the context should be made usable - for example by asking
-the model explicitly which context it used, and by making an unused context
-item visible in the review. An embedding index would improve recall for
-differently worded sections, but recall is not what limited this result.
+Two separate problems, and neither is solved by embeddings:
+
+1. **The retriever delivered the wrong facts.** The questions the model asked
+   are answered somewhere in the corpus - enum values and bit positions live
+   in the signal and interface documents - but full-text search surfaced the
+   message matrix without the fields that were needed. Better recall over the
+   same sections would not have helped; the right *passage granularity* would.
+2. **The model treated context as licence to guess.** Mitigated in the prompt;
+   it has to be re-measured.
+
+Repeating this comparison with `l1-test-draft-4` is the next measurement.
+Before that number exists, adding an embedding index would be optimising a
+component that is not the bottleneck.
