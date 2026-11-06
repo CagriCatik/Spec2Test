@@ -72,6 +72,8 @@ def to_markdown(spec: TestSpecification) -> str:
         "uncovered_requirements",
         "out_of_scope_requirements",
         "open_questions",
+        "findings",
+        "cases_with_findings",
     ):
         add(f"| {key.replace('_', ' ')} | {counts[key]} |")
     add("")

@@ -365,3 +365,87 @@ def test_a_partial_run_can_still_be_saved_and_reopened(spec_a, tmp_path):
     assert len(reopened.test_cases) == 1, "the successful draft survives"
     assert reopened.runs[0].status is RunStatus.PARTIAL
     assert reopened.runs[0].rejected_units, "the failure stays visible"
+
+
+# =====================================================================
+# the CLI produces the deliverable, not only a run file
+# =====================================================================
+def test_the_cli_writes_the_specification_next_to_the_run(spec_a, tmp_path, capsys):
+    """A run on its own is not the result a reader asked for."""
+    from spec2test.cli import main
+
+    out = tmp_path / "out"
+    code = main(
+        [
+            "run",
+            "--spec",
+            str(spec_a),
+            "--mode",
+            "fake",
+            "--out",
+            str(out),
+            "--title",
+            "Test specification: fixture A",
+            "--spec-id",
+            "TS-FIX-001",
+        ]
+    )
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "== test specification ==" in output
+
+    markdown = out / "TS-FIX-001.md"
+    payload = out / "TS-FIX-001.json"
+    project = out / "TS-FIX-001.s2t.json"
+    for path in (markdown, payload, project):
+        assert path.exists(), f"{path.name} was not written"
+
+    text = markdown.read_text(encoding="utf-8")
+    assert "# Test specification: fixture A" in text
+    assert "**Document ID:** TS-FIX-001" in text
+    assert "## Test cases" in text
+    assert "| # | Kind | Action | Expected result |" in text
+    assert "not proof of functional coverage" in text
+
+    data = json.loads(payload.read_text(encoding="utf-8"))
+    assert data["document_id"] == "TS-FIX-001"
+    assert data["counts"]["test_cases"] == len(data["test_cases"])
+    assert data["approved_only"] is False
+
+    # the project file can be reopened for review
+    from spec2test.adapters.persistence.project_store import ProjectStore
+
+    reopened = ProjectStore(project).load()
+    assert reopened.test_cases
+    assert reopened.specification.document_id == "TS-FIX-001"
+
+
+def test_the_specification_counts_match_the_findings(spec_a, tmp_path, capsys):
+    """A clean-looking count would hide the findings the run reported."""
+    from spec2test.application.review import project_from_run
+    from spec2test.application.specification import build_specification
+
+    results = import_documents([spec_a], DEFAULT_IMPORTERS)
+    requirements = [r for result in results for r in result.requirements]
+    run = generate_drafts(requirements, RuleBasedFakeModel())
+    project = project_from_run(
+        run, requirements, [r.document for r in results], name="demo"
+    )
+    spec = build_specification(project)
+    counts = spec.counts()
+
+    reported = sum(len(entry.findings) for entry in spec.entries)
+    assert counts["findings"] == reported
+    assert counts["cases_with_findings"] <= counts["test_cases"]
+    if reported:
+        assert f"{reported} validation finding(s)" in spec.coverage_note()
+
+
+def test_the_specification_can_be_suppressed(spec_a, tmp_path):
+    from spec2test.cli import main
+
+    out = tmp_path / "out"
+    main(["run", "--spec", str(spec_a), "--mode", "fake", "--out", str(out),
+          "--no-spec"])
+    assert list(out.glob("*.md")) == []
+    assert list(out.glob("run-*.json")), "the run file is still written"

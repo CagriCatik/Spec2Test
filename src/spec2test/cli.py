@@ -15,7 +15,11 @@ from pathlib import Path
 
 from .adapters.ollama.client import API_KEY_ENV, MODE_CLOUD, MODE_LOCAL, OllamaError
 from .adapters.ollama.models import capabilities_for, check_model_choice, list_models
+from .adapters.export import save_json, save_markdown, save_specification_xlsx
 from .adapters.persistence import JsonRunStore
+from .adapters.persistence.project_store import PROJECT_SUFFIX, ProjectStore
+from .application.review import project_from_run
+from .application.specification import build_specification
 from .application.generate import ProgressUpdate, generate_drafts
 from .application.ingest import content_hash, import_documents, reference_report
 from .bootstrap import (
@@ -89,7 +93,20 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-repairs", type=int, default=None)
     run.add_argument("--group-size", type=int, default=None)
     run.add_argument("--job-timeout", type=float, default=None)
-    run.add_argument("--out", type=Path, default=None, help="directory for the run file")
+    run.add_argument(
+        "--out", type=Path, default=None,
+        help="directory for the run file and the specification",
+    )
+    run.add_argument(
+        "--title", default=None, help="title of the test specification"
+    )
+    run.add_argument(
+        "--spec-id", default=None, help="document ID of the test specification"
+    )
+    run.add_argument(
+        "--no-spec", dest="write_spec", action="store_false", default=True,
+        help="write only the run file, no specification",
+    )
     run.add_argument("--config", type=Path, default=None)
 
     models = sub.add_parser("models", help="list the models of the configured host")
@@ -319,9 +336,58 @@ def _cmd_run(args) -> int:
     for line in run.report_lines():
         _out(line)
 
-    store = JsonRunStore(args.out or (Path.cwd() / "runs"))
-    path = store.save_run(run)
+    out_dir = args.out or (Path.cwd() / "runs")
+    path = JsonRunStore(out_dir).save_run(run)
     _out(f"run saved: {path}")
+
+    if args.write_spec and run.test_cases:
+        _out()
+        _out("== test specification ==")
+        project = project_from_run(
+            run,
+            catalogue,
+            list(documents.values()),
+            name=args.spec[0].stem if args.spec else "project",
+        )
+        project.specification.title = args.title or (
+            f"Test specification: {args.spec[0].stem}" if args.spec else
+            "Test specification"
+        )
+        project.specification.document_id = args.spec_id or f"TS-{run.run_id[-8:]}"
+        spec = build_specification(project)
+        base = Path(out_dir) / project.specification.document_id
+        written = [
+            save_markdown(spec, base.with_suffix(".md")),
+            save_json(spec, base.with_suffix(".json")),
+        ]
+        try:
+            written.append(save_specification_xlsx(spec, base.with_suffix(".xlsx")))
+        except ImportError:  # pragma: no cover - pandas/openpyxl are optional
+            _out("Excel export skipped: pandas and openpyxl are not installed")
+        # the project file keeps the drafts reviewable later
+        project_path = Path(out_dir) / f"{project.specification.document_id}{PROJECT_SUFFIX}"
+        try:
+            ProjectStore(project_path).save(project)
+            written.append(project_path)
+        except OSError as exc:
+            _out(f"project could not be saved: {exc}")
+
+        counts = spec.counts()
+        _out(
+            f"{counts['test_cases']} draft(s) for "
+            f"{counts['requirements_in_scope'] - counts['uncovered_requirements']} of "
+            f"{counts['requirements_in_scope']} requirement(s) in scope, "
+            f"{counts['open_questions']} unanswered question(s), "
+            f"{counts['findings']} validation finding(s)"
+        )
+        _out(f"note: {spec.coverage_note()}")
+        for item in written:
+            _out(f"written: {item}")
+        _out(
+            "Open the project file in the window to review, approve and export "
+            "the approved subset."
+        )
+
     return EXIT_CODES.get(run.status, 1)
 
 

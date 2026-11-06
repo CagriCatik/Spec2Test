@@ -127,6 +127,10 @@ class TestSpecification:
                 len(entry.unresolved_questions) for entry in self.entries
             )
             + len([q for q in self.project_questions if not q.resolved]),
+            "findings": sum(len(entry.findings) for entry in self.entries),
+            "cases_with_findings": sum(
+                1 for entry in self.entries if entry.findings
+            ),
             "context_items": sum(len(entry.context) for entry in self.entries),
         }
 
@@ -139,8 +143,11 @@ class TestSpecification:
             f"{counts['requirements_in_scope']} requirement(s) in scope, "
             f"{counts['approved']} approved. "
             f"{counts['out_of_scope_requirements']} further requirement(s) of the "
-            "knowledge base were never in scope and are not a gap. A linked "
-            "draft is not proof of functional coverage, and an unresolved "
+            "knowledge base were never in scope and are not a gap. "
+            f"{counts['cases_with_findings']} case(s) carry "
+            f"{counts['findings']} validation finding(s) and "
+            f"{counts['open_questions']} question(s) are unanswered. A linked "
+            "draft is not proof of functional coverage, and an open finding or "
             "question means the case is not ready for use."
         )
 
