@@ -501,3 +501,69 @@ def test_a_value_found_only_in_the_context_names_its_source(tmp_path):
     assert "SYS-REQ-0002" in finding.message and "b.md" in finding.message
     assert with_context.blocks_draft is False
     assert with_context.blocks_approval is True, "the attribution still needs review"
+
+
+def test_a_value_taken_only_from_the_context_is_caught_end_to_end(tmp_path):
+    """The mechanism the committed example demonstrates.
+
+    A model that lifts a value out of the retrieved section must not get it
+    through silently: the finding names the source and blocks approval.
+    """
+    from spec2test.adapters.documents import DEFAULT_IMPORTERS
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+    from spec2test.adapters.knowledge import SqliteKnowledgeIndex
+    from spec2test.application.generate import GenerationSettings, generate_drafts
+    from spec2test.application.indexing import collect_documents, sync_index
+
+    (tmp_path / "target.md").write_text(
+        "### Requirement: SYS-REQ-0001\n"
+        "The balancer shall keep the spread below 20 mV.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "signals.md").write_text(
+        "## Signal table for the balancer\n\n"
+        "The balancer spread signal BMS_Spread is broadcast every 120 ms over "
+        "the bus, so a test can observe it directly.\n\n"
+        "| Signal | Unit | Range |\n| - | - | - |\n| BMS_Spread | mV | 0..500 |\n",
+        encoding="utf-8",
+    )
+    index = SqliteKnowledgeIndex(tmp_path / "k.db")
+    sync = sync_index(index, collect_documents(tmp_path), DEFAULT_IMPORTERS)
+    scope = [r for r in sync.requirements if r.external_id == "SYS-REQ-0001"]
+
+    run = generate_drafts(
+        scope,
+        RuleBasedFakeModel(),
+        settings=GenerationSettings(use_retrieval=True, max_cases_per_unit=1),
+        documents=sync.documents,
+        catalogue=sync.requirements,
+        knowledge=index,
+    )
+
+    assert run.context_items, "no context was retrieved"
+    from spec2test.domain.validation import _numeric_claims
+
+    assert any(
+        (120.0, "ms") in _numeric_claims(item.text) for item in run.context_items
+    ), "the fixture did not retrieve the passage carrying the value"
+
+    codes = {issue.code for unit in run.units for issue in unit.issues}
+    assert "C_VALUE_FROM_CONTEXT" in codes, (
+        "a value lifted from the context passed unnoticed"
+    )
+    finding = next(
+        issue
+        for unit in run.units
+        for issue in unit.issues
+        if issue.code == "C_VALUE_FROM_CONTEXT"
+    )
+    assert "signals.md" in finding.message, "the finding must name its source"
+
+    # and it blocks approval
+    from spec2test.application.review import approval_report, project_from_run
+
+    project = project_from_run(
+        run, sync.requirements, list(sync.documents.values()), name="demo"
+    )
+    allowed, _report = approval_report(project, run.test_cases[0].case_id)
+    assert allowed is False
