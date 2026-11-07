@@ -1,0 +1,53 @@
+four variants, no generation model
+corpus: 22 documents, context budget 6000
+
+passages per segmentation:
+  old   203 passages,   0 with a column header, median  2177 chars, largest  3432
+  new   213 passages,  15 with a column header, median  2128 chars, largest  3432
+
+==============================================================================
+LEXICAL  /  TUNED
+==============================================================================
+  variant                n    sent  starved   items   connected   share   bare table rows
+  baseline              20    0.85        3     2.8       47912     45%                 0
+  segmentation only     20    0.85        0     3.6       44738     41%                21
+  budget only           20    0.55        9     3.0       21872     21%                 0
+  combination           20    0.50       10     3.8       23447     22%                 0
+
+==============================================================================
+LEXICAL  /  HOLDOUT
+==============================================================================
+  variant                n    sent  starved   items   connected   share   bare table rows
+  baseline              16    0.69        4     3.0       43340     52%                 3
+  segmentation only     16    0.69        0     3.7       39428     46%                17
+  budget only           16    0.75        4     3.3       34007     39%                 3
+  combination           16    0.69        5     4.1       28903     34%                 0
+
+==============================================================================
+HYBRID  /  TUNED
+==============================================================================
+  variant                n    sent  starved   items   connected   share   bare table rows
+  baseline              20    0.85        3     3.3       36380     33%                 1
+  segmentation only     20    0.65        3     3.5       34477     31%                20
+  budget only           20    0.50       10     3.5       17952     17%                 1
+  combination           20    0.60        8     4.2       18751     17%                 0
+
+==============================================================================
+HYBRID  /  HOLDOUT
+==============================================================================
+  variant                n    sent  starved   items   connected   share   bare table rows
+  baseline              16    0.75        3     3.4       36243     42%                 4
+  segmentation only     16    0.75        0     3.6       29709     34%                12
+  budget only           16    0.62        6     3.6       19552     22%                 3
+  combination           16    0.62        6     4.1       15756     18%                 0
+
+sent    : at least one passage with a demonstrable link to the
+          requirement reached the prompt. A PROXY, not relevance:
+          a helpful passage can share no identifier at all.
+starved : nothing connected was sent although something was omitted.
+bare table rows: sent passages that are table rows with neither a
+          header row nor a column header attached - unreadable.
+
+'segmentation only' cannot carry a column header: that field does not
+exist in the old selection code. The bare-table-rows column shows what
+adopting one change without the other costs.

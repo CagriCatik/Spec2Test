@@ -55,7 +55,14 @@ Fälle gefunden und erreicht den Prompt in 50–69 %. Bei 4 bis 9 von 20 bzw.
 16 Fragen wurde etwas Verbundenes gefunden und **nichts davon gesendet**.
 
 **66 bis 83 % des gesendeten Kontextbudgets gehen an Passagen ohne
-nachweisbare Verbindung zur Anforderung.** Hybrid ist darin in beiden Mengen
+nachweisbare Verbindung zur Anforderung.**
+
+> **Korrektur vom 2026-11-07.** Das ist **kein belegter Rauschanteil**. Von
+> vier vollständig gelesenen Kontextpaketen
+> ([offline-variants.md](offline-variants.md)) enthielt jedes mindestens
+> eine hilfreiche Passage, die keine Kennung mit der Anforderung teilt — in
+> einem Fall genau die Antwort auf die Frage. „Unverbunden" heißt nur: ohne
+> mechanisch nachweisbaren Bezug. Hybrid ist darin in beiden Mengen
 schlechter: 17 % gegen 22 % und 18 % gegen 34 %.
 
 Die Budgetreservierung für die Aufgaben-Suche wirkt: von den

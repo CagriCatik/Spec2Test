@@ -62,3 +62,4 @@ dist/
 
 # Installer metadata
 *.spec
+docs/benchmarks/.variants/
