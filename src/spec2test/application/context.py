@@ -12,7 +12,7 @@ No Qt, no HTTP, no file access.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping, Sequence
 
 from ..domain.models import (
@@ -186,6 +186,8 @@ def build_context(
     max_items: int = DEFAULT_MAX_CONTEXT_ITEMS,
     max_search_items: int = 3,
     score_ratio: float = DEFAULT_SCORE_RATIO,
+    task_description: str | None = None,
+    max_task_items: int = 2,
 ) -> ContextSelection:
     """Explicit references first, then full-text hits, within one budget.
 
@@ -193,6 +195,14 @@ def build_context(
     Search results fill what is left, signal and interface sections first:
     those carry the signal names and value ranges whose absence causes most
     open questions. Duplicates are dropped and the budget is shared.
+
+    ``task_description`` is the tester's own words for this run. It is
+    searched once per unit with its own small allowance, because it asks a
+    different question from the requirement's identifiers: measured on this
+    corpus, BM25 finds nothing at all for two thirds of prose questions while
+    an embedding retriever finds most of them. Items it brings in carry
+    ``SelectionReason.TASK_SEARCH`` so their contribution can be told apart
+    from the rest.
     """
     selection = build_reference_context(
         under_test,
@@ -201,7 +211,10 @@ def build_context(
         char_budget=char_budget,
         max_items=max_items,
     )
-    if knowledge is None or max_search_items <= 0:
+    wants_task_search = bool(
+        task_description and task_description.strip() and max_task_items > 0
+    )
+    if knowledge is None or (max_search_items <= 0 and not wants_task_search):
         return selection
 
     items = list(selection.items)
@@ -221,7 +234,7 @@ def build_context(
     from .knowledge import search_terms
 
     for requirement in under_test:
-        if search_slots <= 0 or len(items) >= max_items:
+        if max_search_items <= 0 or search_slots <= 0 or len(items) >= max_items:
             break
         terms = search_terms(requirement)
         if not terms:
@@ -299,8 +312,83 @@ def build_context(
                 )
             )
 
+    if wants_task_search:
+        _add_task_context(
+            selection,
+            items,
+            task_description,
+            under_test,
+            knowledge,
+            documents or {},
+            taken_passages=taken_passages,
+            taken_external=taken_external | own_external,
+            own_passages=own_passages,
+            used=sum(item.size for item in items),
+            char_budget=char_budget,
+            max_items=max_items,
+            max_task_items=max_task_items,
+        )
+
     selection.items = tuple(items)
     return selection
+
+
+def _add_task_context(
+    selection: ContextSelection,
+    items: list,
+    task_description: str,
+    under_test: Sequence[Requirement],
+    knowledge,
+    documents: Mapping[str, SourceDocument],
+    *,
+    taken_passages: set,
+    taken_external: set,
+    own_passages: set,
+    used: int,
+    char_budget: int,
+    max_items: int,
+    max_task_items: int,
+) -> None:
+    """Search the tester's own description, over every kind at once.
+
+    No tier order here: the description is prose, and which kind answers it
+    is exactly what is unknown. The retriever decides.
+    """
+    from .knowledge import normalise_for_search
+
+    terms = [t for t in normalise_for_search(task_description).split() if len(t) > 2]
+    if not terms:
+        return
+    cited_by = under_test[0] if under_test else None
+    if cited_by is None:
+        return
+    hits = list(
+        knowledge.search(
+            terms,
+            limit=max_task_items * 3,
+            exclude_passages=own_passages | taken_passages,
+        )
+    )
+    taken = 0
+    for hit in hits:
+        if taken >= max_task_items or len(items) >= max_items:
+            break
+        passage = hit.passage
+        if passage.passage_id in taken_passages:
+            continue
+        if passage.external_id and passage.external_id in taken_external:
+            continue
+        item = _item_from_hit(hit, cited_by, documents)
+        if used + item.size > char_budget:
+            continue
+        items.append(
+            replace(item, reason=SelectionReason.TASK_SEARCH)
+        )
+        taken_passages.add(passage.passage_id)
+        if passage.external_id:
+            taken_external.add(passage.external_id)
+        used += item.size
+        taken += 1
 
 
 def _item_from_hit(hit, cited_by: Requirement, documents: Mapping[str, SourceDocument]):

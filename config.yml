@@ -74,6 +74,10 @@ generation:
   # until the effect on the written drafts has been measured too.
   retrieval: lexical
   embedding_model: nomic-embed-text
+  # max_task_items: how many context items the free "Task for this run" text
+  # may bring in on its own. It is searched as a separate query because it
+  # asks a different question from the requirement's identifiers.
+  max_task_items: 2
   job_timeout_s: 900         # bounded runtime per job
   # Legacy flat path only (core.generate_test_cases, for existing scripts).
   # The window no longer offers these; they do not affect a normal run.

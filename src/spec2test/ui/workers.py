@@ -202,6 +202,12 @@ class DraftTask(QRunnable):
         guidance = self.guidance
         if guidance is None:
             guidance = load_guidance_file(app_cfg.paths.prompt_path)
+        if self.task_description:
+            gen_settings.task_description = self.task_description
+            self.signals.message.emit(
+                "Task for this run is in the prompt and is searched as its "
+                "own query; it cannot add a fact."
+            )
         if guidance:
             gen_settings.domain_guidance = guidance
             self.signals.message.emit(

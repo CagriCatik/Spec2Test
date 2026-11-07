@@ -109,5 +109,18 @@ class HybridKnowledgeIndex:
     def passage_count(self) -> int:
         return self._lexical.passage_count()
 
+    def close(self) -> None:
+        """Both sides share one connection; closing twice is harmless."""
+        for retriever in (self._lexical, self._semantic):
+            closer = getattr(retriever, "close", None)
+            if closer is not None:
+                closer()
+
+    def __enter__(self) -> "HybridKnowledgeIndex":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
 
 __all__ = ["DEFAULT_RRF_K", "HybridKnowledgeIndex"]

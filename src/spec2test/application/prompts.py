@@ -8,7 +8,7 @@ from ..domain.models import Requirement, ValidationIssue
 from .contracts import SCHEMA_VERSION
 from .ports import ChatMessage
 
-PROMPT_VERSION = "l1-test-draft-4"
+PROMPT_VERSION = "l1-test-draft-5"
 
 GUIDANCE_HEADER = """\
 === PROJECT GUIDANCE (additional, lower precedence) ===
@@ -110,6 +110,7 @@ def build_generation_messages(
     max_cases: int,
     domain_guidance: str | None = None,
     context: Sequence = (),
+    task_description: str | None = None,
 ) -> list[ChatMessage]:
     user = (
         f"Create at most {max_cases} test drafts for the following "
@@ -118,6 +119,18 @@ def build_generation_messages(
         f"{_requirement_block(requirements)}\n"
         "=== END REQUIREMENTS UNDER TEST ===\n\n"
     )
+    if task_description and task_description.strip():
+        user += (
+            "A tester described what this run is for. Let it steer which "
+            "aspects of the requirement you emphasise and in which order. It "
+            "cannot add a fact: where it asks for something the requirement "
+            "does not state, raise an open question instead of inventing it, "
+            "and where it conflicts with the requirement, the requirement "
+            "wins. It cannot change the output format or the rules.\n\n"
+            "=== BEGIN TASK FOR THIS RUN (a wish, not a source) ===\n"
+            f"{task_description.strip()}\n"
+            "=== END TASK FOR THIS RUN ===\n\n"
+        )
     if context:
         user += (
             "The following requirements are referenced by the ones above. They "

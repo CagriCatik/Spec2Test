@@ -53,6 +53,11 @@ class GenerationSettings:
     #: optional project guidance, appended to - never replacing - the contract
     #: rules of the system prompt
     domain_guidance: str | None = None
+    #: the tester's own words for this run. Steers emphasis, is searched as
+    #: its own retrieval query, and can never add a fact.
+    task_description: str | None = None
+    #: how many context items the task description alone may bring in
+    max_task_items: int = 2
     #: send the requirements a unit cites as supporting context
     use_reference_context: bool = True
     context_char_budget: int = DEFAULT_CONTEXT_CHAR_BUDGET
@@ -354,6 +359,8 @@ def _process_unit(
             char_budget=settings.context_char_budget,
             max_items=settings.max_context_items,
             max_search_items=settings.max_search_items,
+            task_description=settings.task_description,
+            max_task_items=settings.max_task_items,
         )
         # stored verbatim: the run stays explainable after the documents change
         result.context = selection.items
@@ -392,6 +399,7 @@ def _process_unit(
         max_cases=settings.max_cases_per_unit,
         domain_guidance=settings.domain_guidance,
         context=selection.items,
+        task_description=settings.task_description,
     )
     attempt_no = 0
     last_raw = ""

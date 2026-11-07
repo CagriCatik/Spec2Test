@@ -479,3 +479,44 @@ def test_the_setting_is_read_from_the_configuration():
     )
     assert settings.retrieval == "hybrid"
     assert settings.embedding_model == "other:1b"
+
+
+def test_every_retriever_can_be_closed(indexes):
+    """The GUI releases the retriever in a finally block without asking which."""
+    lexical, vector, _embedder, _tmp = indexes
+    vector.build()
+    for retriever in (lexical, vector, HybridKnowledgeIndex(lexical, vector)):
+        assert hasattr(retriever, "close"), type(retriever).__name__
+    HybridKnowledgeIndex(lexical, vector).close()
+
+
+def test_the_gui_releases_a_hybrid_retriever_without_crashing(tmp_path, monkeypatch):
+    """Reproduced: the run finished, then the finally block raised."""
+    pytest.importorskip("PySide6")
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from spec2test import bootstrap
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+    from spec2test.ui import workers
+
+    monkeypatch.setattr(
+        "spec2test.adapters.knowledge.OllamaEmbedder",
+        lambda **_k: BagOfWordsEmbedder(),
+    )
+    for name, text in CORPUS.items():
+        (tmp_path / f"{name}.md").write_text(text, encoding="utf-8")
+    index_path = tmp_path / "k.db"
+    sync_index(
+        SqliteKnowledgeIndex(index_path),
+        sorted(tmp_path.glob("*.md")),
+        build_importers(),
+    )
+    from spec2test.application.generate import GenerationSettings
+
+    knowledge = bootstrap.build_knowledge(
+        index_path, GenerationSettings(retrieval="hybrid")
+    )
+    assert isinstance(knowledge, HybridKnowledgeIndex)
+    knowledge.close()  # the line that used to raise AttributeError
+    assert workers is not None

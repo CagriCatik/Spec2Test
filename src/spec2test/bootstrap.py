@@ -152,6 +152,7 @@ def generation_settings_from_config(config: dict[str, Any]) -> GenerationSetting
         use_retrieval=bool(gen.get("use_retrieval", False)),
         max_search_items=max(0, int(gen.get("max_search_items", 3))),
         retrieval=str(gen.get("retrieval", "lexical")).strip().lower(),
+        max_task_items=max(0, int(gen.get("max_task_items", 2))),
         embedding_model=str(gen.get("embedding_model", "nomic-embed-text")),
         context_char_budget=max(0, int(gen.get("context_char_budget", 6_000))),
         max_context_items=max(0, int(gen.get("max_context_items", 5))),

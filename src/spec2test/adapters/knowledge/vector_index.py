@@ -239,6 +239,16 @@ class VectorKnowledgeIndex:
         """Exact ID resolution stays with the lexical index, as it should."""
         return self._lexical.by_external_id(external_id)
 
+    def close(self) -> None:
+        """Callers release a retriever without knowing which one they hold."""
+        self._lexical.close()
+
+    def __enter__(self) -> "VectorKnowledgeIndex":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
 
 # ----------------------------------------------------------------- helpers --
 def _all_passages(index: SqliteKnowledgeIndex) -> list[Passage]:

@@ -81,6 +81,9 @@ class SelectionReason(str, Enum):
 
     EXPLICIT_REFERENCE = "explicit_reference"
     FULL_TEXT_SEARCH = "full_text_search"
+    #: found by searching the tester's free task description, not the
+    #: requirement. Kept apart so its contribution can be measured.
+    TASK_SEARCH = "task_search"
 
 
 class QuestionOrigin(str, Enum):
