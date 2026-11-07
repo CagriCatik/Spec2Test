@@ -278,14 +278,16 @@ def missing_grounds(
                 targeted = [
                     g
                     for g in step.grounds
-                    if g.target == origin and _ground_covers(g, claim)
+                    if g.target == origin
+                    and not g.is_stale
+                    and _ground_covers(g, claim)
                 ]
                 if targeted:
                     continue
                 loose = [
                     g
                     for g in step.grounds
-                    if not g.target and _ground_covers(g, claim)
+                    if not g.target and not g.is_stale and _ground_covers(g, claim)
                 ]
                 if loose:
                     if len(by_value[claim]) > 1:
@@ -358,6 +360,16 @@ def check_grounds(
 def _check_one(
     ground: Ground, where: str, sources: dict[str, _Source]
 ) -> Iterable[ValidationIssue]:
+    if ground.is_stale:
+        yield ValidationIssue(
+            "C_GROUND_STALE",
+            Severity.CLARIFICATION,
+            where,
+            f"the ground for {ground.claim!r} was written for a field that "
+            f"has since been edited: {ground.stale_reason}. Check that the "
+            "quote still supports what the field now says, then restate it.",
+        )
+        return
     if ground.kind is GroundKind.UNRESOLVED:
         if not (ground.question or "").strip():
             yield ValidationIssue(

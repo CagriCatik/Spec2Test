@@ -34,10 +34,22 @@ def test_no_api_key_is_stored_in_the_configuration():
 def test_configured_paths_exist_relative_to_the_repository():
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     root = CONFIG.parent
-    for key in ("pdf_path", "prompt_path"):
-        value = config["paths"][key]
-        assert not Path(value).is_absolute()
+    for key, value in (config["paths"] or {}).items():
+        if not value:
+            continue
+        assert not Path(value).is_absolute(), key
         assert (root / value).exists(), f"{key} points to {value}, which is missing"
+
+
+def test_the_shipped_configuration_loads_no_project_guidance():
+    """A shipped default must not put one project's guidance in every run.
+
+    prompt_path used to point at Prompt_Advanced_Test_Architect.txt, so a
+    battery run silently carried rear-axle-steering guidance. Guidance is
+    a project's own; it is loaded deliberately, from the window.
+    """
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    assert not (config["paths"] or {}).get("prompt_path")
 
 
 def test_the_new_layer_reads_the_configuration():
@@ -63,7 +75,8 @@ def test_the_legacy_layer_still_reads_the_configuration():
     legacy = AppConfig.from_dict(config)
     assert legacy.model.name
     assert legacy.generation.combine_pages >= 1
-    assert legacy.paths.prompt_path is not None
+    assert legacy.paths.pdf_path is not None
+    # prompt_path is unset on purpose; see the test above
 
 
 def test_the_model_name_matches_the_configured_mode():

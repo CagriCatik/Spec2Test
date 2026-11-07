@@ -84,13 +84,16 @@ def test_no_shipped_prompt_demands_the_legacy_format(prompt_file):
         )
 
 
-def test_the_shipped_configuration_produces_a_usable_system_prompt():
-    """The exact path the GUI takes with config.yml as shipped."""
+def test_a_loaded_guidance_file_produces_a_usable_system_prompt():
+    """The exact path the window takes once a tester loads guidance.
+
+    The shipped configuration no longer names one: a project's guidance is
+    chosen per project, not inherited from the default file.
+    """
     from core import load_prompt_file
 
-    config = yaml.safe_load((ROOT / "config.yml").read_text(encoding="utf-8"))
-    guidance = load_prompt_file(ROOT / config["paths"]["prompt_path"])
-    assert guidance, "the configured prompt file must be readable"
+    guidance = load_prompt_file(ROOT / "prompts" / "Prompt_Advanced_Test_Architect.txt")
+    assert guidance, "the guidance file must be readable"
 
     messages = build_generation_messages(
         [requirement()], max_cases=3, domain_guidance=guidance

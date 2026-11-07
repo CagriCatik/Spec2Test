@@ -211,7 +211,7 @@ def test_the_specification_tab_is_built_from_the_project(window):
     spec = window._specification
     assert spec is not None
     assert spec.entries, "no test case in the specification"
-    assert "Test specification (" in window.tabs.tabText(4)
+    assert "Test specification (" in window.tabs.tabText(3)
     assert window.specification.tree.topLevelItemCount() >= 1
     text = window.specification.heading.text()
     assert "revision" in text and "approved" in text

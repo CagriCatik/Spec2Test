@@ -18,10 +18,20 @@ fields; a measurement is a row of its own with quantity, value, unit,
 tolerance and evidence. What the editor does not offer, it carries
 through untouched rather than re-deriving.
 
-**A field the editor cannot show is still kept.** Grounds belong to a
-claim and are written by the model or by the review workflow, not typed
-here. They are displayed read-only and copied onto the edited step, so an
-edit elsewhere in the case cannot silently drop them.
+**A field the editor cannot show is still kept — but not blindly.**
+Grounds belong to a field (``expectations[0]``) and are written by the
+model or the review workflow, not typed here. They ride along with their
+step, and their address is followed when rows move:
+
+* a field that only moved keeps its ground, with the address corrected;
+* a field whose text was **changed** keeps its ground marked stale: an old
+  quote must not go on covering a sentence that now says something else;
+* a field that was **removed** leaves its ground stale too, rather than
+  pointing at whatever took its place.
+
+A stale ground still shows its quote — throwing it away because a
+neighbouring word changed helps nobody — but it stops counting as
+coverage, so the claim reappears as unsupported until someone looks.
 
 The result is that a title-only change is exactly a title-only change: the
 steps come back identical, the revision does not rise, and the grounding
@@ -50,6 +60,10 @@ from ..domain.models import Measurement, TestStep
 ACTION, EXPECTATION, MEASUREMENT = "action", "expectation", "measurement"
 _ROLE = Qt.UserRole + 1
 _PAYLOAD = Qt.UserRole + 2
+#: the field address this row had when it was loaded, e.g. "expectations[0]"
+_ORIGIN = Qt.UserRole + 3
+#: the text it had then, so a change can be told from a move
+_ORIGINAL_TEXT = Qt.UserRole + 4
 
 COLUMNS = ("Step / field", "Value", "Unit", "Tolerance", "Evidence")
 
@@ -104,12 +118,14 @@ class StepEditor(QWidget):
             node.setData(0, _ROLE, ACTION)
             node.setData(0, _PAYLOAD, index)
             node.setFlags(node.flags() | Qt.ItemIsEditable)
-            for expectation in step.expectations:
+            for position, expectation in enumerate(step.expectations):
                 child = QTreeWidgetItem(["expected", expectation, "", "", ""])
                 child.setData(0, _ROLE, EXPECTATION)
+                child.setData(0, _ORIGIN, f"expectations[{position}]")
+                child.setData(0, _ORIGINAL_TEXT, expectation)
                 child.setFlags(child.flags() | Qt.ItemIsEditable)
                 node.addChild(child)
-            for measurement in step.measurements:
+            for position, measurement in enumerate(step.measurements):
                 child = QTreeWidgetItem(
                     [
                         "measured",
@@ -120,6 +136,20 @@ class StepEditor(QWidget):
                     ]
                 )
                 child.setData(0, _ROLE, MEASUREMENT)
+                child.setData(0, _ORIGIN, f"measurements[{position}]")
+                child.setData(
+                    0,
+                    _ORIGINAL_TEXT,
+                    "|".join(
+                        [
+                            measurement.quantity,
+                            measurement.value or "",
+                            measurement.unit or "",
+                            measurement.tolerance or "",
+                            measurement.evidence or "",
+                        ]
+                    ),
+                )
                 # the measured value lives in its own column so it can be
                 # edited without being re-parsed out of a sentence
                 child.setText(1, measurement.quantity)
@@ -189,18 +219,42 @@ class StepEditor(QWidget):
             action = node.text(1).strip()
             expectations: list[str] = []
             measurements: list[Measurement] = []
+            #: old address -> (new address, changed?) so grounds can follow
+            moves: dict[str, tuple[str | None, bool]] = {}
             for index in range(node.childCount()):
                 child = node.child(index)
                 role = child.data(0, _ROLE)
                 if role == EXPECTATION:
                     text = child.text(1).strip()
-                    if text:
-                        expectations.append(text)
+                    if not text:
+                        continue
+                    origin = child.data(0, _ORIGIN)
+                    if origin:
+                        moves[origin] = (
+                            f"expectations[{len(expectations)}]",
+                            text != (child.data(0, _ORIGINAL_TEXT) or ""),
+                        )
+                    expectations.append(text)
                 elif role == MEASUREMENT:
                     quantity = child.text(1).strip()
                     if not quantity:
                         continue
                     stored = child.data(1, _PAYLOAD)
+                    now = "|".join(
+                        [
+                            quantity,
+                            stored or "",
+                            child.text(2).strip(),
+                            child.text(3).strip(),
+                            child.text(4).strip(),
+                        ]
+                    )
+                    origin = child.data(0, _ORIGIN)
+                    if origin:
+                        moves[origin] = (
+                            f"measurements[{len(measurements)}]",
+                            now != (child.data(0, _ORIGINAL_TEXT) or ""),
+                        )
                     measurements.append(
                         Measurement(
                             quantity=quantity,
@@ -217,8 +271,6 @@ class StepEditor(QWidget):
                 else None
             )
             if original is not None:
-                # grounds are not edited here; dropping them would be a
-                # silent loss, so they ride along with the step they belong to
                 out.append(
                     replace(
                         original,
@@ -226,6 +278,7 @@ class StepEditor(QWidget):
                         action=action,
                         expectations=tuple(expectations),
                         measurements=tuple(measurements),
+                        grounds=_follow_grounds(original.grounds, moves),
                     )
                 )
             else:
@@ -244,4 +297,50 @@ class StepEditor(QWidget):
         return self.steps() == self._steps
 
 
-__all__ = ["ACTION", "COLUMNS", "EXPECTATION", "MEASUREMENT", "StepEditor"]
+def _follow_grounds(grounds, moves: dict) -> tuple:
+    """Move each ground to where its field went, or mark it stale.
+
+    ``moves`` maps the address a field had when the editor loaded to the
+    address it has now and whether its text changed. A field that is not in
+    the map was removed.
+    """
+    out = []
+    for ground in grounds:
+        if not ground.target:
+            out.append(ground)
+            continue
+        moved = moves.get(ground.target)
+        if moved is None:
+            out.append(
+                replace(
+                    ground,
+                    stale_reason=(
+                        f"the field {ground.target} it belonged to was removed"
+                    ),
+                )
+            )
+            continue
+        new_target, changed = moved
+        if changed:
+            out.append(
+                replace(
+                    ground,
+                    target=new_target,
+                    stale_reason=f"the text of {ground.target} was edited",
+                )
+            )
+        elif new_target != ground.target:
+            # only moved: the sentence is the same, so the quote still holds
+            out.append(replace(ground, target=new_target))
+        else:
+            out.append(ground)
+    return tuple(out)
+
+
+__all__ = [
+    "ACTION",
+    "COLUMNS",
+    "EXPECTATION",
+    "MEASUREMENT",
+    "StepEditor",
+]

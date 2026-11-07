@@ -141,17 +141,26 @@ def test_visible_labels_are_plain_text(window):
         assert _emoji_free(window.tabs.tabText(index))
 
 
-def test_the_window_shows_only_tabs_the_pipeline_fills(window):
+def test_the_window_is_organised_as_four_work_areas(window):
+    """Named after the step of the job, not after the data structures."""
     labels = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert labels == [
-        "Test drafts",
-        "Requirements",
-        "Findings",
-        "Export table",
-        "Test specification",
-        "Context",
-        "Log",
+        "1  Project and sources",
+        "2  Test order",
+        "3  Drafts and review",
+        "4  Test specification",
     ]
+
+
+def test_every_former_tab_still_has_a_home(window):
+    """Nothing was dropped in the reorganisation, only moved."""
+    for attribute in (
+        "documents_view", "log",          # 1
+        "requirements",                   # 2
+        "drafts", "review", "context", "findings", "research_report",  # 3
+        "specification", "summary", "table",                            # 4
+    ):
+        assert hasattr(window, attribute), attribute
 
 
 def test_dead_legacy_controls_are_gone(window):
@@ -443,8 +452,8 @@ def test_drafts_requirements_and_sources_are_shown(window, fake_model, spec_a):
 
     assert window.requirements.topLevelItemCount() == 10
     assert window.drafts.topLevelItemCount() == 10
-    assert "Test drafts (10)" == window.tabs.tabText(0)
-    assert "Requirements (10)" == window.tabs.tabText(1)
+    assert "Drafts and review (10)" in window.tabs.tabText(2)
+    assert "Test order (10)" in window.tabs.tabText(1)
 
     first = window.drafts.topLevelItem(0)
     labels = [first.child(i).text(0) for i in range(first.childCount())]
@@ -1089,3 +1098,63 @@ def test_open_project_still_takes_a_path(window, tmp_path, spec_a, fake_model):
         finally:
             other._project_dirty = False
             other.close()
+
+
+# =====================================================================
+# guidance belongs to a project, not to a skill level
+# =====================================================================
+def test_guidance_from_another_project_is_called_out(window, tmp_path, monkeypatch):
+    """Rear-axle-steering guidance in a battery run must not pass silently."""
+    from spec2test.domain.models import Requirement, SourceSpan
+
+    text = (
+        "BMS-REQ-SYS-0010: The battery management system shall monitor the "
+        "cell voltage of the high-voltage pack."
+    )
+    window._catalogue = [
+        Requirement(
+            requirement_id="REQ-1", text=text, external_id="BMS-REQ-SYS-0010",
+            spans=(SourceSpan("bms.md", 0, len(text), text),),
+        )
+    ]
+    guidance = tmp_path / "ras.md"
+    guidance.write_text(
+        "# Project guidance: Rear-Axle-Steering (RAS), expert level\n\n"
+        "Cover counter-steering and the rear-wheel angle.\n",
+        encoding="utf-8",
+    )
+    window._adopt_guidance(guidance)
+
+    shown = window.lbl_guidance_fit.text()
+    assert "Rear-Axle-Steering" in shown, shown
+    assert "does not appear anywhere in the loaded sources" in shown
+    assert "will still be sent" in shown, "it warns, it does not veto"
+
+
+def test_guidance_that_fits_is_not_flagged(window, tmp_path):
+    from spec2test.domain.models import Requirement, SourceSpan
+
+    text = "BMS-REQ-SYS-0010: The battery management system monitors the pack."
+    window._catalogue = [
+        Requirement(
+            requirement_id="REQ-1", text=text, external_id="BMS-REQ-SYS-0010",
+            spans=(SourceSpan("bms.md", 0, len(text), text),),
+        )
+    ]
+    guidance = tmp_path / "bms.md"
+    guidance.write_text(
+        "# Project guidance: battery management system\n\n"
+        "Cover the pack monitoring behaviour.\n",
+        encoding="utf-8",
+    )
+    window._adopt_guidance(guidance)
+    assert window.lbl_guidance_fit.text() == ""
+
+
+def test_the_window_offers_no_skill_level_preset(window):
+    """Beginner / Advanced / Expert are project files, not levels."""
+    import spec2test.ui.main_window as module
+
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    for word in ("Beginner", "Expert level", "skill level"):
+        assert word not in source, word

@@ -10,6 +10,7 @@ from typing import Callable
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QSplitter,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -204,29 +205,37 @@ class ReviewPanel(QWidget):
         self.header.setWordWrap(True)
         layout.addWidget(self.header)
 
-        lists = QHBoxLayout()
+        # a splitter, not a fixed row: two group boxes side by side set a
+        # minimum width of ~1256 px on the whole window, which does not fit
+        # a 1280x800 laptop screen with any room to spare
+        lists = QSplitter(Qt.Horizontal)
+        lists.setChildrenCollapsible(True)
         findings_box = QGroupBox("Findings blocking approval")
         findings_layout = QVBoxLayout(findings_box)
         self.findings = QListWidget()
         self.findings.setWordWrap(True)
         self.findings.setMaximumHeight(130)
+        self.findings.setMinimumWidth(120)
         findings_layout.addWidget(self.findings)
-        self.btn_accept = QPushButton("Accept selected finding with a reason…")
+        self.btn_accept = QPushButton("Accept finding with a reason…")
         self.btn_accept.clicked.connect(self.accept_selected_finding)
         findings_layout.addWidget(self.btn_accept)
-        lists.addWidget(findings_box, 1)
+        lists.addWidget(findings_box)
 
         questions_box = QGroupBox("Open questions")
         questions_layout = QVBoxLayout(questions_box)
         self.questions = QListWidget()
         self.questions.setWordWrap(True)
         self.questions.setMaximumHeight(130)
+        self.questions.setMinimumWidth(120)
         questions_layout.addWidget(self.questions)
-        self.btn_answer = QPushButton("Answer selected question…")
+        self.btn_answer = QPushButton("Answer question…")
         self.btn_answer.clicked.connect(self.answer_selected_question)
         questions_layout.addWidget(self.btn_answer)
-        lists.addWidget(questions_box, 1)
-        layout.addLayout(lists)
+        lists.addWidget(questions_box)
+        lists.setStretchFactor(0, 1)
+        lists.setStretchFactor(1, 1)
+        layout.addWidget(lists)
 
         actions = QHBoxLayout()
         self.btn_edit = QPushButton("Edit…")

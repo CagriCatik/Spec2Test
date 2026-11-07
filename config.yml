@@ -99,7 +99,11 @@ paths:
   # rules and cannot override them; it must not prescribe an output format.
   # The advanced prompt is domain-neutral. Prompt_Expert_Test_Architect.txt is
   # written for rear-axle steering and would mislead on other domains.
-  prompt_path: prompts/Prompt_Advanced_Test_Architect.txt
+  # prompt_path is deliberately unset. The files under prompts/ are
+  # PROJECT guidance, not skill levels: Prompt_Expert_Test_Architect.txt
+  # is about rear-axle steering and has no business in a battery run.
+  # Load one from the window when it belongs to the project.
+  # prompt_path: prompts/Prompt_Advanced_Test_Architect.txt
 
 # Legacy flat path only; the current pipeline does not use these.
 cache:

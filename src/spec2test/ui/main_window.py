@@ -16,7 +16,7 @@ from typing import Any, Final
 
 import yaml
 from PySide6.QtCore import QSignalBlocker, QThreadPool, Qt, QTimer
-from PySide6.QtGui import QAction, QCursor, QIcon
+from PySide6.QtGui import QAction, QCursor, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication,
     QPlainTextEdit,
@@ -172,6 +172,13 @@ class MainWindow(QMainWindow):
         self._catalogue: list = []
         self._index_path = Path.cwd() / ".spec2test" / "knowledge.db"
         self._index_task = None
+        #: True while the index is being rebuilt; a run must not start then
+        self._indexing = False
+        #: the source state the current index describes
+        self._indexed_state: tuple | None = None
+        self._building_state: tuple | None = None
+        #: the last researching review, kept apart from the run on purpose
+        self._last_research = None
         self._specification = None
         self._task: DraftTask | None = None
         self._start_time: float | None = None
@@ -201,7 +208,8 @@ class MainWindow(QMainWindow):
 
         file_menu = bar.addMenu("&File")
         for title, slot, shortcut in (
-            ("Open specification…", self.select_specifications, "Ctrl+O"),
+            ("Add documents…", self.select_specifications,
+             QKeySequence.StandardKey.Open),
             ("Open guidance file…", self.load_guidance, None),
         ):
             action = QAction(title, self)
@@ -212,8 +220,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         for title, slot, shortcut in (
             ("Open project…", self.open_project, "Ctrl+Shift+O"),
-            ("Save project", self.save_project, "Ctrl+S"),
-            ("Save project as…", self.save_project_as, "Ctrl+Shift+S"),
+            ("Save project", self.save_project, QKeySequence.StandardKey.Save),
+            ("Save project as…", self.save_project_as,
+             QKeySequence.StandardKey.SaveAs),
         ):
             action = QAction(title, self)
             action.triggered.connect(lambda _checked=False, s=slot: s())
@@ -226,9 +235,28 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.act_save_config)
         file_menu.addSeparator()
         quit_action = QAction("Quit", self)
-        quit_action.setShortcut("Ctrl+Q")
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        quit_action.setMenuRole(QAction.QuitRole)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
+
+        view_menu = bar.addMenu("&View")
+        for index, title in enumerate(
+            ("Project and sources", "Test order", "Drafts and review",
+             "Test specification")
+        ):
+            action = QAction(f"{index + 1}  {title}", self)
+            # Cmd+1..4 on macOS, Ctrl+1..4 elsewhere: Qt maps it per platform
+            action.setShortcut(QKeySequence(f"Ctrl+{index + 1}"))
+            action.triggered.connect(
+                lambda _checked=False, i=index: self.tabs.setCurrentIndex(i)
+            )
+            view_menu.addAction(action)
+        view_menu.addSeparator()
+        run_action = QAction("Generate drafts", self)
+        run_action.setShortcut(QKeySequence("Ctrl+R"))
+        run_action.triggered.connect(lambda _checked=False: self.start_run())
+        view_menu.addAction(run_action)
 
         help_menu = bar.addMenu("&Help")
         params = QAction("Parameter reference", self)
@@ -244,8 +272,12 @@ class MainWindow(QMainWindow):
         outer.setSpacing(10)
 
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(True)
         outer.addWidget(splitter, 1)
-        splitter.addWidget(self._build_settings_panel())
+        settings_panel = self._build_settings_panel()
+        # collapsible: on a 1280x800 screen the drafts need the room more
+        settings_panel.setMinimumWidth(0)
+        splitter.addWidget(settings_panel)
         splitter.addWidget(self._build_results_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -257,7 +289,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------ settings ---
     def _build_settings_panel(self) -> QWidget:
         panel = QWidget()
-        panel.setMinimumWidth(340)
+        panel.setMinimumWidth(300)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(4)
@@ -266,6 +298,7 @@ class MainWindow(QMainWindow):
         self.scope.btn_folder.clicked.connect(self.select_knowledge_folder)
         self.scope.btn_files.clicked.connect(self.select_knowledge_files)
         self.scope.index_requested.connect(self.build_index)
+        self.scope.sources_changed.connect(self.note_sources_changed)
         layout.addWidget(self.scope)
         layout.addWidget(self._group_task())
         layout.addWidget(self._group_context())
@@ -308,6 +341,10 @@ class MainWindow(QMainWindow):
         self.lbl_guidance.setWordWrap(True)
         self.lbl_guidance.setProperty("role", "hint")
         layout.addWidget(self.lbl_guidance)
+        self.lbl_guidance_fit = QLabel()
+        self.lbl_guidance_fit.setWordWrap(True)
+        self.lbl_guidance_fit.setProperty("role", "warning")
+        layout.addWidget(self.lbl_guidance_fit)
 
         row = QHBoxLayout()
         self.btn_guidance_load = QPushButton("Load…")
@@ -398,13 +435,27 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Context")
         layout = QVBoxLayout(group)
 
+        # two independent things, shown as two. "Search off" used to read
+        # as "no context at all", which is wrong: a requirement that cites
+        # another by ID still gets it.
+        self.use_references = QCheckBox("Follow references the documents state")
+        self.use_references.setChecked(True)
+        self.use_references.setToolTip(
+            "A requirement that names another by ID gets that one as "
+            "context. This is not a search: the document said so itself."
+        )
+        self.use_references.toggled.connect(self._on_context_mode)
+        layout.addWidget(self.use_references)
+
+        layout.addWidget(QLabel("Additional search over the sources"))
         self.context_mode = QComboBox()
-        self.context_mode.addItem("Off - only the requirement itself", "off")
+        self.context_mode.addItem("Off - no search", "off")
         self.context_mode.addItem("Lexical search (BM25)", "lexical")
         self.context_mode.addItem("Hybrid: lexical + embeddings", "hybrid")
         self.context_mode.setToolTip(
-            "Off sends only the requirement under test and anything it cites "
-            "by ID.\nLexical adds full-text search over the sources.\n"
+            "Off means no search. Requirements cited by ID are still "
+            "followed if the box above is ticked.\n"
+            "Lexical searches the sources full-text.\n"
             "Hybrid adds an embedding model; it needs "
             'pip install -e ".[embeddings]" and a pulled embedding model, '
             "and falls back to lexical with a warning when it is missing."
@@ -427,11 +478,21 @@ class MainWindow(QMainWindow):
     def _describe_context_state(self, run=None) -> None:
         """Say what is set, what the index holds, and what a run really used."""
         chosen = self.context_choice()
-        parts = [f"Requested: {chosen}."]
-        if chosen == "off":
-            parts = ["Requested: off - no search, only cited requirements."]
-        else:
+        references = self.use_references.isChecked()
+        parts = [
+            "References: "
+            + ("followed." if references else "not followed."),
+            f"Search: {chosen}.",
+        ]
+        if chosen == "off" and references:
+            parts.append(
+                "No search runs; a requirement that cites another by ID "
+                "still gets it."
+            )
+        if chosen != "off":
             parts.append(self.scope.index_state_text() or "Index: not built yet.")
+            if self.index_is_stale:
+                parts.append("The index does not match the sources.")
         if run is not None:
             used = getattr(run, "retrieval_used", None) or self._retriever_of(run)
             parts.append(f"Last run actually used: {used}.")
@@ -470,41 +531,146 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------- results ---
     def _build_results_panel(self) -> QWidget:
+        """Four work areas, in the order the work happens.
+
+        The seven technical tabs this replaces were named after the data
+        structures behind them - "Export table", "Context", "Log" - and a
+        reviewer had to know the pipeline to find anything. The areas below
+        are named after the step of the job; what used to be a tab of its
+        own is now a sub-tab of the area it belongs to.
+        """
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
 
-        drafts_tab = QWidget()
-        drafts_layout = QVBoxLayout(drafts_tab)
-        drafts_layout.setContentsMargins(0, 0, 0, 0)
-        drafts_split = QSplitter(Qt.Vertical)
-        self.drafts = QTreeWidget()
-        self.drafts.setHeaderLabels(["Test draft", "Status"])
-        self.drafts.setColumnWidth(0, 560)
-        self.drafts.setAlternatingRowColors(True)
-        self.drafts.currentItemChanged.connect(self._on_draft_selected)
-        drafts_split.addWidget(self.drafts)
-        self.review = ReviewPanel()
-        self.review.logged.connect(self.log_line)
-        self.review.changed.connect(self._on_review_changed)
-        drafts_split.addWidget(self.review)
-        drafts_split.setStretchFactor(0, 3)
-        drafts_split.setStretchFactor(1, 2)
-        drafts_layout.addWidget(drafts_split)
-        self.tabs.addTab(drafts_tab, "Test drafts")
+        self._build_export_controls()
+        self.tabs.addTab(self._area_project(), "1  Project and sources")
+        self.tabs.addTab(self._area_order(), "2  Test order")
+        self.tabs.addTab(self._area_drafts(), "3  Drafts and review")
+        self.tabs.addTab(self._area_specification(), "4  Test specification")
+        return self.tabs
 
+    # ---- 1 ----------------------------------------------------------------
+    def _area_project(self) -> QWidget:
+        """What is loaded, what was found in it, and what the log says."""
+        area = QWidget()
+        layout = QVBoxLayout(area)
+        split = QSplitter(Qt.Vertical)
+
+        self.documents_view = QTreeWidget()
+        self.documents_view.setHeaderLabels(
+            ["Document", "Format", "Requirements", "Findings"]
+        )
+        self.documents_view.setAlternatingRowColors(True)
+        self.documents_view.setColumnWidth(0, 420)
+        split.addWidget(self.documents_view)
+
+        self.log = QTextEdit(readOnly=True)
+        self.log.setObjectName("log")
+        split.addWidget(self.log)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 2)
+        layout.addWidget(split)
+        return area
+
+    # ---- 2 ----------------------------------------------------------------
+    def _area_order(self) -> QWidget:
+        """Which requirements are in scope, with what was captured from them."""
+        area = QWidget()
+        layout = QVBoxLayout(area)
+        self.lbl_order = QLabel(
+            "Pick the requirements on the left. Everything else stays "
+            "available as context."
+        )
+        self.lbl_order.setWordWrap(True)
+        layout.addWidget(self.lbl_order)
         self.requirements = QTreeWidget()
         self.requirements.setHeaderLabels(["Requirement and source", "Clarification"])
         self.requirements.setColumnWidth(0, 560)
         self.requirements.setAlternatingRowColors(True)
-        self.tabs.addTab(self.requirements, "Requirements")
+        layout.addWidget(self.requirements)
+        return area
+
+    # ---- 3 ----------------------------------------------------------------
+    def _area_drafts(self) -> QWidget:
+        """The drafts, the review beneath them, the evidence beside them."""
+        area = QWidget()
+        layout = QVBoxLayout(area)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        outer = QSplitter(Qt.Horizontal)
+        outer.setChildrenCollapsible(True)
+        left = QSplitter(Qt.Vertical)
+        left.setChildrenCollapsible(True)
+        self.drafts = QTreeWidget()
+        self.drafts.setHeaderLabels(["Test draft", "Status"])
+        self.drafts.setColumnWidth(0, 460)
+        self.drafts.setMinimumWidth(200)
+        self.drafts.setAlternatingRowColors(True)
+        self.drafts.currentItemChanged.connect(self._on_draft_selected)
+        left.addWidget(self.drafts)
+        self.review = ReviewPanel()
+        self.review.logged.connect(self.log_line)
+        self.review.changed.connect(self._on_review_changed)
+        left.addWidget(self.review)
+        left.setStretchFactor(0, 3)
+        left.setStretchFactor(1, 2)
+        outer.addWidget(left)
+
+        side = QTabWidget()
+        side.setDocumentMode(True)
+        # the side panel must be able to give way: without this the whole
+        # window cannot be made narrower than ~1256 px
+        side.setMinimumWidth(180)
+        self.side_tabs = side
+        self.context = QTreeWidget()
+        self.context.setHeaderLabels(["Supporting context", "Kind and reason"])
+        self.context.setColumnWidth(0, 320)
+        self.context.setAlternatingRowColors(True)
+        side.addTab(self.context, "Sources used")
 
         self.findings = QTextBrowser()
         self.findings.setObjectName("findings")
         self.findings.setHtml("<p>Generate drafts to see the findings.</p>")
-        self.tabs.addTab(self.findings, "Findings")
+        side.addTab(self.findings, "Findings")
+
+        research_tab = QWidget()
+        research_layout = QVBoxLayout(research_tab)
+        self.btn_research = QPushButton("Run the researching review…")
+        self.btn_research.setToolTip(
+            "Asks a model whether each ground fits its claim, and lets it "
+            "look sources up. Calls a model; writes a separate report and "
+            "changes nothing."
+        )
+        self.btn_research.clicked.connect(self.start_research_review)
+        research_layout.addWidget(self.btn_research)
+        self.research_report = QTextBrowser()
+        self.research_report.setHtml(
+            "<p>No research review yet. It is never started automatically: "
+            "it costs model calls.</p>"
+        )
+        research_layout.addWidget(self.research_report)
+        side.addTab(research_tab, "Research review")
+
+        outer.addWidget(side)
+        outer.setStretchFactor(0, 3)
+        outer.setStretchFactor(1, 2)
+        layout.addWidget(outer)
+        return area
+
+    # ---- 4 ----------------------------------------------------------------
+    def _area_specification(self) -> QWidget:
+        """The document, its coverage, and the flat table behind the export."""
+        area = QWidget()
+        layout = QVBoxLayout(area)
+        layout.setContentsMargins(0, 0, 0, 0)
+        inner = QTabWidget()
+        inner.setDocumentMode(True)
+
+        self.specification = SpecificationView()
+        inner.addTab(self.specification, "Document")
 
         table_tab = QWidget()
         table_layout = QVBoxLayout(table_tab)
-        table_layout.setContentsMargins(0, 0, 0, 0)
         self.summary = QTextBrowser()
         self.summary.setMaximumHeight(150)
         self.summary.setHtml("<p>Generate drafts to see the summary.</p>")
@@ -514,22 +680,148 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAlternatingRowColors(True)
         table_layout.addWidget(self.table, 1)
-        self.tabs.addTab(table_tab, "Export table")
+        inner.addTab(table_tab, "Flat table")
+        layout.addWidget(inner)
 
-        self.specification = SpecificationView()
-        self.tabs.addTab(self.specification, "Test specification")
+        export_row = QHBoxLayout()
+        export_row.addWidget(QLabel("Export:"))
+        export_row.addWidget(self.export_what)
+        export_row.addWidget(self.btn_export_md)
+        export_row.addWidget(self.btn_export_json)
+        export_row.addWidget(self.btn_save_xlsx)
+        export_row.addWidget(self.btn_save_csv)
+        export_row.addStretch(1)
+        layout.addLayout(export_row)
+        return area
 
-        # what was actually sent as supporting context, with its origin
-        self.context = QTreeWidget()
-        self.context.setHeaderLabels(["Supporting context", "Kind and reason"])
-        self.context.setColumnWidth(0, 560)
-        self.context.setAlternatingRowColors(True)
-        self.tabs.addTab(self.context, "Context")
+    def start_research_review(self) -> None:
+        """The researching review of the selected draft. Never automatic."""
+        case_id = self._selected_case_id()
+        if self._project is None or case_id is None:
+            QMessageBox.information(
+                self, "No draft selected", "Select a draft first."
+            )
+            return
+        if not self.sources.documents():
+            QMessageBox.warning(
+                self, "No source", "The reviewer needs the sources to look in."
+            )
+            return
+        model_name = self.model_name.currentText().strip()
+        if not model_name:
+            QMessageBox.warning(self, "No model", "Enter or select a model first.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Start the researching review?",
+            f"This calls {model_name} and lets it look sources up.\n\n"
+            "It writes a separate report next to the project and changes "
+            "neither the draft nor its approval.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.research_report.setHtml("<p>Running…</p>")
+        self.log_line(f"Researching review of {case_id} with {model_name}")
+        try:
+            report = self._run_research_review(case_id, model_name)
+        except Exception as exc:  # noqa: BLE001 - the message is the result
+            self.research_report.setHtml(
+                f"<p>The review could not run: {type(exc).__name__}: {exc}</p>"
+            )
+            self.log_line(f"Researching review failed: {exc}")
+            return
+        self.show_research_report(report)
 
-        self.log = QTextEdit(readOnly=True)
-        self.log.setObjectName("log")
-        self.tabs.addTab(self.log, "Log")
-        return self.tabs
+    def _run_research_review(self, case_id: str, model_name: str):
+        from ..adapters.agents.mcp_bridge import McpToolBridge
+        from ..adapters.agents.research_reviewer import (
+            ALLOWED_TOOLS,
+            build_model,
+            review_with_research,
+            server_parameters,
+        )
+        from ..application.research_review import Budget
+        from ..application.review import context_for_case
+
+        case = self._project.case(case_id)
+        by_id = {r.requirement_id: r for r in self._project.requirements}
+        requirement = next(
+            (by_id[rid] for rid in case.requirement_ids if rid in by_id), None
+        )
+        if requirement is None:
+            raise ValueError("the target requirement is not in the project")
+        folder = next(iter(self.sources.folders()), None)
+        corpus = folder or self.sources.documents()[0].parent
+        parameters = server_parameters(corpus=corpus, index=self._index_path)
+        with McpToolBridge(parameters) as bridge:
+            return review_with_research(
+                case,
+                requirement,
+                model=build_model(
+                    model_name, api_base=self.research_api_base()
+                ),
+                tools=bridge.tools(only=ALLOWED_TOOLS),
+                context=context_for_case(self._project, case_id),
+                budget=Budget(),
+            )
+
+    def research_api_base(self) -> str:
+        host = self.host.text().strip() or "http://localhost:11434"
+        return host.rstrip("/") + "/v1"
+
+    def show_research_report(self, report) -> None:
+        """Its own report, shown as its own thing - never folded into the run."""
+        rows = []
+        for verdict in report.verdicts:
+            mark = {
+                "clear": "checked, no finding",
+                "finding": "FINDING",
+                "not_checked": "NOT CHECKED",
+            }[verdict.outcome]
+            rows.append(
+                f"<tr><td>{mark}</td><td>{verdict.claim_id}</td>"
+                f"<td>{verdict.claim}</td><td>{verdict.explanation[:200]}</td></tr>"
+            )
+        read = "".join(
+            f"<li>{s.identifier} - {s.document_filename or '-'}"
+            f"{', v' + s.document_version if s.document_version else ''}"
+            f", chars {s.char_start}-{s.char_end}</li>"
+            for s in report.consulted
+        )
+        self.research_report.setHtml(
+            f"<p><b>{report.summary()}</b></p>"
+            f"<table border=1 cellpadding=4>{''.join(rows)}</table>"
+            f"<p><b>Sources read during the review</b></p><ul>{read or '<li>none</li>'}</ul>"
+            f"<p><i>{report.provenance_note}</i></p>"
+        )
+        self._last_research = report
+        self.log_line(report.summary())
+
+    def _build_export_controls(self) -> None:
+        """Built before the areas, because area 4 lays them out."""
+        self.export_what = QComboBox()
+        self.export_what.addItems(["All drafts", "Approved only"])
+        self.export_what.setToolTip(
+            "A draft export is marked as such. Approved only contains the "
+            "test cases a reviewer has released."
+        )
+        self.btn_export_md = QPushButton("Markdown…")
+        self.btn_export_md.clicked.connect(self.export_specification_markdown)
+        self.btn_export_json = QPushButton("JSON…")
+        self.btn_export_json.clicked.connect(self.export_specification_json)
+        self.btn_save_xlsx = QPushButton("Excel…")
+        self.btn_save_xlsx.clicked.connect(self.export_specification_xlsx)
+        self.btn_save_csv = QPushButton("Flat CSV…")
+        self.btn_save_csv.clicked.connect(self.export_csv)
+        for button in (
+            self.btn_save_csv,
+            self.btn_save_xlsx,
+            self.btn_export_md,
+            self.btn_export_json,
+        ):
+            button.setEnabled(False)
 
     def _build_action_bar(self) -> QHBoxLayout:
         bar = QHBoxLayout()
@@ -547,36 +839,12 @@ class MainWindow(QMainWindow):
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self.cancel_run)
-        self.export_what = QComboBox()
-        self.export_what.addItems(["All drafts", "Approved only"])
-        self.export_what.setToolTip(
-            "A draft export is marked as such. Approved only contains the test "
-            "cases a reviewer has released."
-        )
-        self.btn_export_md = QPushButton("Specification (Markdown)…")
-        self.btn_export_md.clicked.connect(self.export_specification_markdown)
-        self.btn_export_json = QPushButton("Specification (JSON)…")
-        self.btn_export_json.clicked.connect(self.export_specification_json)
-        self.btn_save_xlsx = QPushButton("Specification (Excel)…")
-        self.btn_save_xlsx.clicked.connect(self.export_specification_xlsx)
-        self.btn_save_csv = QPushButton("Flat CSV…")
-        self.btn_save_csv.clicked.connect(self.export_csv)
-        for button in (
-            self.btn_save_csv,
-            self.btn_save_xlsx,
-            self.btn_export_md,
-            self.btn_export_json,
-        ):
-            button.setEnabled(False)
 
+        # the export controls live in work area 4, where the specification
+        # is. In the bottom bar they also set a ~245 px floor on the window
+        # width that a 1280x800 screen cannot spare.
         bar.addWidget(self.progress)
         bar.addStretch(1)
-        bar.addWidget(QLabel("Export:"))
-        bar.addWidget(self.export_what)
-        bar.addWidget(self.btn_export_md)
-        bar.addWidget(self.btn_export_json)
-        bar.addWidget(self.btn_save_xlsx)
-        bar.addWidget(self.btn_save_csv)
         bar.addSpacing(16)
         bar.addWidget(self.btn_cancel)
         bar.addWidget(self.btn_run)
@@ -644,6 +912,9 @@ class MainWindow(QMainWindow):
         # the context choice comes from the file too, otherwise the window
         # would silently override a configured retrieval setting with "off"
         generation = (self._loaded_config.get("generation") or {})
+        self.use_references.setChecked(
+            bool(generation.get("use_reference_context", True))
+        )
         if generation.get("use_retrieval"):
             wanted = (
                 "hybrid"
@@ -710,6 +981,7 @@ class MainWindow(QMainWindow):
                 ),
             },
             "generation": {
+                "use_reference_context": self.use_references.isChecked(),
                 "use_retrieval": self.context_choice() != "off",
                 "retrieval": (
                     "hybrid" if self.context_choice() == "hybrid" else "lexical"
@@ -851,7 +1123,7 @@ class MainWindow(QMainWindow):
         if not names:
             return
         added = self.sources.add_files(Path(name) for name in names)
-        self.scope.show_sources(self.sources)
+        self.note_sources_changed()
         self.log_line(f"Added {added} document(s); {self.sources.summary()}")
         self.build_index(rebuild=False)
 
@@ -865,7 +1137,7 @@ class MainWindow(QMainWindow):
         if not self.sources.add_folder(Path(folder)):
             self.log_line(f"{folder} is already a source")
             return
-        self.scope.show_sources(self.sources)
+        self.note_sources_changed()
         self.log_line(f"Added {folder}; {self.sources.summary()}")
         self.build_index(rebuild=False)
 
@@ -878,7 +1150,7 @@ class MainWindow(QMainWindow):
         if not names:
             return
         added = self.sources.add_files(Path(n) for n in names)
-        self.scope.show_sources(self.sources)
+        self.note_sources_changed()
         self.log_line(f"Added {added} document(s); {self.sources.summary()}")
         self.build_index(rebuild=False)
 
@@ -896,7 +1168,7 @@ class MainWindow(QMainWindow):
         if folder:
             self.sources.add_folder(folder)
         self.sources.add_files(files or [])
-        self.scope.show_sources(self.sources)
+        self.note_sources_changed()
 
     @property
     def _spec_paths(self) -> list[Path]:
@@ -911,13 +1183,20 @@ class MainWindow(QMainWindow):
     def _spec_paths(self, paths) -> None:
         self.sources.replace_files(paths)
         if hasattr(self, "scope"):
-            self.scope.show_sources(self.sources)
+            self.note_sources_changed()
 
     def build_index(self, rebuild: bool = False) -> None:
-        paths = self.knowledge_paths()
+        paths = self.sources.documents()
         if not paths:
-            self.log_line("Select a knowledge base first.")
+            self.log_line("Add a source first.")
             return
+        if self._indexing:
+            self.log_line("The index is already being updated.")
+            return
+        self._indexing = True
+        # the state this build describes, captured before it starts; it is
+        # only adopted when the build finishes
+        self._building_state = self._source_state()
         self.scope.set_busy(True)
         self.statusBar().showMessage(
             f"{'Rebuilding' if rebuild else 'Updating'} the index over "
@@ -929,11 +1208,76 @@ class MainWindow(QMainWindow):
         self._index_task = task
         self._threadpool.start(task)
 
+    def _source_state(self) -> tuple:
+        """What the sources look like right now: path, size and mtime.
+
+        A removed document, an added one and an edited one all change this,
+        so "the index no longer matches the sources" needs no file watcher.
+        """
+        state = []
+        for path in self.sources.documents():
+            try:
+                info = path.stat()
+                state.append((str(path), info.st_size, int(info.st_mtime)))
+            except OSError:
+                state.append((str(path), -1, -1))
+        return tuple(state)
+
+    @property
+    def index_is_stale(self) -> bool:
+        """True when the sources changed after the index was last built."""
+        if self._indexed_state is None:
+            return bool(self.sources.documents())
+        return self._source_state() != self._indexed_state
+
+    def note_sources_changed(self) -> None:
+        """Called whenever the source set is edited."""
+        if hasattr(self, "scope"):
+            self.scope.show_sources(self.sources)
+            self.scope.set_index_stale(self.index_is_stale)
+        self._describe_context_state(self._run)
+
+    def show_documents(self, result=None) -> None:
+        """What each source turned into: format, requirements, findings."""
+        self.documents_view.clear()
+        documents = list((result.documents if result else {}).values()) or list(
+            self._last_documents
+        )
+        warnings = list(getattr(result, "warnings", []) or [])
+        by_document: dict[str, int] = {}
+        for requirement in self._catalogue or self._last_requirements:
+            for span in requirement.spans[:1]:
+                by_document[span.document_id] = by_document.get(span.document_id, 0) + 1
+        for document in documents:
+            notes = [w for w in warnings if document.filename in str(w)]
+            item = QTreeWidgetItem(
+                [
+                    document.filename,
+                    document.format.value,
+                    str(by_document.get(document.document_id, 0)),
+                    "; ".join(str(n)[:90] for n in notes[:2]) or "-",
+                ]
+            )
+            item.setToolTip(0, str(document.declared_id or document.document_id))
+            self.documents_view.addTopLevelItem(item)
+        for entry in self.sources.missing():
+            self.documents_view.addTopLevelItem(
+                QTreeWidgetItem([str(entry.path), "-", "-", "source is missing"])
+            )
+        self.tabs.setTabText(
+            0, f"1  Project and sources ({self.documents_view.topLevelItemCount()})"
+        )
+
     def _on_index_ready(self, result) -> None:
+        self._indexing = False
+        self._indexed_state = self._building_state
+        self.scope.set_index_stale(False)
         self.scope.set_busy(False)
         self._catalogue = list(result.requirements)
         self._last_documents = list(result.documents.values())
         self.scope.set_requirements(self._catalogue)
+        self.check_guidance_fits()
+        self.show_documents(result)
         self.scope.show_index_state(
             result.summary(),
             len(result.documents),
@@ -975,7 +1319,28 @@ class MainWindow(QMainWindow):
         self._guidance_path = path
         self.lbl_guidance.setText(f"{path.name} ({len(text.splitlines())} line(s))")
         self.log_line(f"Guidance loaded from {path}")
+        self.check_guidance_fits()
         return True
+
+    def check_guidance_fits(self) -> str | None:
+        """Say so when the guidance names a system the sources never mention.
+
+        Not a veto: reusing guidance across projects can be deliberate.
+        But a file about rear-axle steering loaded into a battery run
+        should not pass in silence.
+        """
+        from ..application.guidance import check_guidance
+
+        text = self.guidance.toPlainText()
+        sources = [r.text for r in (self._catalogue or self._last_requirements)]
+        if not text.strip() or not sources:
+            self.lbl_guidance_fit.setText("")
+            return None
+        message = check_guidance(text, sources).message()
+        self.lbl_guidance_fit.setText(message or "")
+        if message:
+            self.log_line(message)
+        return message
 
     def load_guidance(self) -> None:
         name, _ = QFileDialog.getOpenFileName(
@@ -1035,6 +1400,29 @@ class MainWindow(QMainWindow):
         if not self.model_name.currentText().strip():
             QMessageBox.warning(self, "No model", "Enter or select a model name first.")
             return
+        if self._indexing:
+            QMessageBox.warning(
+                self,
+                "The index is being updated",
+                "Wait for the index to finish. Starting now would read a "
+                "different set of sources than the one being indexed.",
+            )
+            return
+        if self.context_choice() != "off" and self.index_is_stale:
+            answer = QMessageBox.question(
+                self,
+                "The index does not match the sources",
+                "A source was added, removed or edited since the index was "
+                "built. The run would search an outdated index.\n\n"
+                "Update the index first?",
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Cancel:
+                return
+            if answer == QMessageBox.Yes:
+                self.build_index(rebuild=False)
+                return
 
         settings = generation_settings_from_config(self.collect_config())
         unit_count = max(
@@ -1135,7 +1523,7 @@ class MainWindow(QMainWindow):
             for note in requirement.notes:
                 top.addChild(QTreeWidgetItem([f"Note: {note}", ""]))
             self.requirements.addTopLevelItem(top)
-        self.tabs.setTabText(1, f"Requirements ({len(requirements)})")
+        self.tabs.setTabText(1, f"2  Test order ({len(requirements)})")
 
     def show_run(self, run) -> None:
         self._reset_buttons()
@@ -1202,6 +1590,13 @@ class MainWindow(QMainWindow):
                 return
         self._mark_dirty()
         self.review.show_case(self._project, None)
+
+    def _selected_case_id(self) -> str | None:
+        """The draft the tree is on, whichever of its rows is highlighted."""
+        item = self.drafts.currentItem()
+        while item is not None and item.parent() is not None:
+            item = item.parent()
+        return item.data(0, Qt.UserRole) if item is not None else None
 
     def _on_draft_selected(self, current, _previous) -> None:
         while current is not None and current.parent() is not None:
@@ -1321,7 +1716,7 @@ class MainWindow(QMainWindow):
                 top.addChild(group)
             self.drafts.addTopLevelItem(top)
         self.drafts.expandToDepth(0)
-        self.tabs.setTabText(0, f"Test drafts ({len(cases)})")
+        self.tabs.setTabText(2, f"3  Drafts and review ({len(cases)})")
 
     def _fill_specification(self) -> None:
         """The deliverable, rebuilt from the project as it stands."""
@@ -1330,7 +1725,9 @@ class MainWindow(QMainWindow):
         self._specification = build_specification(self._project)
         self.specification.show_specification(self._specification)
         counts = self._specification.counts()
-        self.tabs.setTabText(4, f"Test specification ({counts['test_cases']})")
+        self.tabs.setTabText(
+            3, f"4  Test specification ({counts['test_cases']})"
+        )
 
     def _fill_context(self, run) -> None:
         """Everything that was sent alongside the requirement, and why."""
@@ -1370,7 +1767,9 @@ class MainWindow(QMainWindow):
                 top.addChild(node)
             self.context.addTopLevelItem(top)
         self.context.expandToDepth(0)
-        self.tabs.setTabText(5, f"Context ({total})" if total else "Context")
+        self.side_tabs.setTabText(
+            0, f"Sources used ({total})" if total else "Sources used"
+        )
 
     def _fill_findings(self, run) -> None:
         def escape(text: str) -> str:
@@ -1449,7 +1848,9 @@ class MainWindow(QMainWindow):
         if not run.open_questions and not blocked:
             parts.append("<p>No findings.</p>")
         self.findings.setHtml("".join(parts))
-        self.tabs.setTabText(2, f"Findings ({len(run.open_questions) + len(blocked)})")
+        self.side_tabs.setTabText(
+            1, f"Findings ({len(run.open_questions) + len(blocked)})"
+        )
 
     def _fill_summary(self) -> None:
         if not self._cases:
@@ -1616,6 +2017,7 @@ class MainWindow(QMainWindow):
             self._fill_findings(self._run)
             self._fill_context(self._run)
         self._fill_specification()
+        self._restore_bench(project)
         if project.requirements:
             self._catalogue = list(project.requirements)
             self.scope.set_requirements(self._catalogue)
@@ -1672,7 +2074,45 @@ class MainWindow(QMainWindow):
         self._project_store = store
         return self._write_project(store)
 
+    def _capture_bench(self) -> None:
+        """Put the working set on the project before it is written."""
+        if self._project is None:
+            return
+        self._project.source_folders = [str(p) for p in self.sources.folders()]
+        self._project.source_files = [str(p) for p in self.sources.files()]
+        self._project.task_description = (
+            self.task_description.toPlainText().strip() or None
+        )
+        self._project.domain_guidance = self.guidance.toPlainText().strip() or None
+
+    def _restore_bench(self, project) -> None:
+        """Bring the working set back, and say what is not there any more."""
+        self.sources.clear()
+        for folder in project.source_folders:
+            self.sources.add_folder(Path(folder))
+        self.sources.add_files(Path(p) for p in project.source_files)
+        if project.task_description:
+            self.task_description.setPlainText(project.task_description)
+        if project.domain_guidance:
+            self.guidance.setPlainText(project.domain_guidance)
+        self.note_sources_changed()
+
+        missing = self.sources.missing()
+        if missing:
+            self.log_line(
+                f"{len(missing)} source(s) of this project are no longer "
+                f"where they were: {', '.join(str(e.path) for e in missing[:3])}"
+            )
+        if self.sources.documents() and not self._index_path.exists():
+            self.scope.set_index_stale(True)
+            self.log_line(
+                f"No local index at {self._index_path}. The stored run "
+                "context is unchanged, but a new run needs the index built "
+                "again on this machine."
+            )
+
     def _write_project(self, store: ProjectStore) -> bool:
+        self._capture_bench()
         try:
             path = store.save(self._project)
         except OSError as exc:

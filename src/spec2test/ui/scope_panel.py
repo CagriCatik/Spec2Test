@@ -1,4 +1,4 @@
-"""Knowledge base, index state and the test scope.
+"""Sources, index state and the test scope.
 
 Two things are kept apart on purpose: the **knowledge base** is what may be
 searched for context, the **scope** is what test cases are written for. A
@@ -66,13 +66,14 @@ class ScopePanel(QWidget):
         super().__init__(parent)
         self._requirements: list = []
         self._sources = None
+        self._index_stale = False
         self._folder: Path | None = None
         self._files: list[Path] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        base = QGroupBox("Knowledge base")
+        base = QGroupBox("Sources")
         base_layout = QVBoxLayout(base)
         self.lbl_base = QLabel("No source added yet.")
         self.lbl_base.setWordWrap(True)
@@ -120,20 +121,26 @@ class ScopePanel(QWidget):
         hint.setProperty("role", "hint")
         scope_layout.addWidget(hint)
 
-        filter_row = QHBoxLayout()
+        # one row each: side by side they clipped each other to a few
+        # characters as soon as the column was narrow
         self.document_filter = QComboBox()
         self.document_filter.addItem(ALL_DOCUMENTS)
         self.document_filter.currentTextChanged.connect(self._apply_filter)
+        scope_layout.addWidget(self.document_filter)
         self.search = QLineEdit()
         self.search.setPlaceholderText("filter by ID or text")
+        self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._apply_filter)
-        filter_row.addWidget(self.document_filter, 1)
-        filter_row.addWidget(self.search, 1)
-        scope_layout.addLayout(filter_row)
+        scope_layout.addWidget(self.search)
 
         self.requirements = QListWidget()
         self.requirements.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.requirements.itemSelectionChanged.connect(self.scope_changed)
+        # elide instead of scrolling sideways: a list you have to scroll
+        # horizontally to read is unusable in a narrow column
+        self.requirements.setTextElideMode(Qt.ElideRight)
+        self.requirements.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.requirements.setWordWrap(False)
         scope_layout.addWidget(self.requirements)
 
         select_row = QHBoxLayout()
@@ -218,10 +225,24 @@ class ScopePanel(QWidget):
         )
 
     def set_busy(self, busy: bool) -> None:
-        for button in (self.btn_build, self.btn_update, self.btn_folder, self.btn_files):
+        for button in (self.btn_build, self.btn_update, self.btn_folder,
+                       self.btn_files, self.btn_remove):
             button.setEnabled(not busy)
         if busy:
             self.lbl_index.setText("Index: working…")
+
+    def set_index_stale(self, stale: bool) -> None:
+        """Say that the sources moved on without the index."""
+        self._index_stale = stale
+        if stale:
+            self.lbl_index.setText(
+                "Index: out of date - a source was added, removed or edited "
+                "since it was built. Update it before searching."
+            )
+
+    @property
+    def index_stale(self) -> bool:
+        return bool(getattr(self, "_index_stale", False))
 
     # ----------------------------------------------------------- scope --
     def set_requirements(self, requirements) -> None:

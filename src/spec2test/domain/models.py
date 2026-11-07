@@ -255,6 +255,15 @@ class Ground:
     formula: str | None = None
     #: set when kind is UNRESOLVED: the question that replaces the claim
     question: str | None = None
+    #: set when the field this ground belongs to was edited after the ground
+    #: was written. The ground is kept - throwing away a quote because a
+    #: neighbouring word changed helps nobody - but it no longer counts as
+    #: covering its claim until someone looks at it again.
+    stale_reason: str | None = None
+
+    @property
+    def is_stale(self) -> bool:
+        return bool(self.stale_reason)
 
     def __post_init__(self) -> None:
         if not self.claim.strip():
@@ -683,6 +692,15 @@ class Project:
     history: list[ReviewEvent] = field(default_factory=list)
     open_questions: list[OpenQuestion] = field(default_factory=list)
     specification: SpecificationMeta = field(default_factory=SpecificationMeta)
+    #: the sources as the user chose them: folders and single documents, as
+    #: text, so reopening restores the working set and not only the files
+    #: that happened to be imported. A path that has since moved is shown as
+    #: missing rather than silently dropped.
+    source_folders: list[str] = field(default_factory=list)
+    source_files: list[str] = field(default_factory=list)
+    #: what the last run was asked to do, so reopening restores the bench
+    task_description: str | None = None
+    domain_guidance: str | None = None
 
     # ------------------------------------------------------------- lookup
     def case(self, case_id: str) -> TestCase | None:
