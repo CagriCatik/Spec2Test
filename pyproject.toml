@@ -26,10 +26,13 @@ rag = ["scikit-learn>=1.4"]
 # semantic retrieval: the vectors come from a local Ollama embedding model,
 # so nothing is downloaded at import time. See docs/benchmarks/retrieval-sources.md
 embeddings = ["llama-index-core>=0.14", "llama-index-embeddings-ollama>=0.8"]
+# read-only MCP access to the search and the evidence checks
+mcp = ["fastmcp>=2.0"]
 dev = ["pytest>=8.2"]
 
 [project.scripts]
 spec2test = "spec2test.cli:main"
+spec2test-mcp = "spec2test.adapters.mcp.server:main"
 
 [project.gui-scripts]
 spec2test-gui = "spec2test.ui.app:main"

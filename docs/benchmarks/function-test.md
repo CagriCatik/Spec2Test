@@ -197,6 +197,20 @@ Das ist das gewünschte Verhalten.
 
 963 Tests, 99 Architekturtests.
 
+## Weiterhin offen
+
+**Zwei der drei echten Generierungsfälle sind nicht entstanden** und bleiben
+offen, bis sie nachgeholt werden:
+
+| Anforderung | Situation | Stand |
+|---|---|---|
+| BMS-REQ-THM-0404 | braucht einen Zusatzkontext | **offen** |
+| BMS-REQ-BAL-0503 | eine benötigte Angabe fehlt tatsächlich | **offen** |
+
+Dazu: der Prüfagent lief über keinen echten Entwurf, und ob das Modell mit
+`l1-test-draft-8` das Feld `value` nun füllt, ist ungemessen. Alle drei
+brauchen Modellaufrufe.
+
 ## Grenzen
 
 * **Ein** echter Entwurf statt der geforderten drei, weil ich vier Aufrufe
