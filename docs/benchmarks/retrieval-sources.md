@@ -116,8 +116,10 @@ generation:
   embedding_model: nomic-embed-text
 ```
 
-Hybrid bleibt **abschaltbar und nicht voreingestellt**, bis gemessen ist, was
-es mit den geschriebenen Entwürfen macht. Bessere Quellenfindung ist eine
+Hybrid bleibt **abschaltbar und nicht voreingestellt**. Inzwischen ist
+gemessen, was es mit den geschriebenen Entwürfen macht
+([retrieval-arms.md](retrieval-arms.md), 120 Läufe): nichts Gutes. Die hier
+gemessene bessere Quellenfindung erreicht die Entwürfe nicht. Bessere Quellenfindung ist eine
 notwendige, keine hinreichende Bedingung für bessere Tests — die letzte
 Messung hat gezeigt, dass mehr Kontext die Rückfragen des Modells
 unterdrücken kann. Ist das Modell nicht erreichbar, fällt der Lauf auf

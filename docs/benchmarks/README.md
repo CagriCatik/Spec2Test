@@ -146,3 +146,12 @@ default) and the two measurements left to do are, in this order:
    the prompt fix changed the picture;
 2. then the same table with `retrieval: hybrid`, to see whether better
    source finding reaches the drafts at all.
+
+**Both were measured together: [retrieval-arms.md](retrieval-arms.md),
+120 runs over one baseline.** Better source finding does not reach the
+drafts. Hybrid retrieves demonstrably different passages (38 of 40 paired
+runs) and is no better in any metric, worse in several. A third to nearly
+half of all retrieved context turns out to be the documents' own scope and
+overview sections - 32 % lexical, 42 % hybrid. The bottleneck is passage
+quality, not ranking, which is the same conclusion point 1 above reached
+from the other direction.

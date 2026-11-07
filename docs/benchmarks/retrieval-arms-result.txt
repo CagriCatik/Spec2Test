@@ -1,0 +1,165 @@
+120 run(s) recorded, 120 undegraded and finished
+prompt version(s): l1-test-draft-5
+model(s): gpt-oss:120b-cloud
+
+no degraded run: every arm used the retriever it asked for,
+so the two views below rest on the same runs
+
+==============================================================================
+WHOLE SYSTEM (every planned run, fallbacks and failures included)
+==============================================================================
+completion
+  arm         runs  completed   other  not started
+  none          40         40       0            0
+  lexical       40         40       0            0
+  hybrid        40         40       0            0
+
+mean per run (standard deviation in brackets)
+  metric                                                   none               lexical                hybrid
+  test drafts                                      1.93 (0.27)          2.00 (0.00)          2.00 (0.00)
+  open questions                                   9.65 (5.25)          8.80 (4.33)          9.80 (6.28)
+  unsupported values                               1.07 (1.99)          1.60 (2.20)          1.32 (1.79)   best: none
+  expectations without a criterion                 6.20 (4.35)          5.35 (3.97)          5.92 (4.67)   best: lexical
+  possible value conflicts                         0.00 (0.00)          0.75 (1.01)          1.05 (1.18)   best: none
+  findings a reviewer must work through            7.47 (4.33)          7.83 (4.31)          8.80 (5.99)   best: none
+  context items sent                               0.00 (0.00)          3.00 (0.64)          3.20 (0.52)
+    of those found by the task text                0.00 (0.00)          0.50 (0.60)          0.50 (0.60)
+  context values actually used                     0.00 (0.00)          0.07 (0.35)          0.05 (0.22)   best: lexical
+  model calls                                      1.02 (0.16)          1.12 (0.33)          1.02 (0.16)   best: none
+  repairs                                          0.03 (0.16)          0.12 (0.33)          0.03 (0.16)   best: none
+  seconds                                          7.26 (1.41)          8.80 (2.03)          8.38 (1.43)   best: none
+
+context: found is not sent, and sent is not used
+  arm         sent/run   by task    used   used/sent
+  none            0.00      0.00       0           -
+  lexical         3.00      0.50       3        0.03
+  hybrid          3.20      0.50       2        0.02
+
+paired comparison, over requirements present in every arm
+  20 of 20 requirement(s) have a counterpart in every arm
+  metric                                            none     lexical      hybrid
+  test drafts                                       1.93        2.00        2.00
+  open questions                                    9.65        8.80        9.80
+  unsupported values                                1.07        1.60        1.32
+  expectations without a criterion                  6.20        5.35        5.92
+  possible value conflicts                          0.00        0.75        1.05
+  findings a reviewer must work through             7.47        7.83        8.80
+  context items sent                                0.00        3.00        3.20
+    of those found by the task text                 0.00        0.50        0.50
+  context values actually used                      0.00        0.07        0.05
+  model calls                                       1.02        1.12        1.02
+  repairs                                           0.03        0.12        0.03
+  seconds                                           7.26        8.80        8.38
+
+per requirement: open questions, mean of the repetitions
+  requirement               none   lexical    hybrid
+  BMS-REQ-AFE-0101           5.5       3.5       5.5
+  BMS-REQ-AFE-0102           9.5      10.5      11.0
+  BMS-REQ-AFE-0106           9.0      10.0      10.5
+  BMS-REQ-BAL-0501          11.0      11.0      10.0
+  BMS-REQ-BAL-0504          10.5      10.0      11.5
+  BMS-REQ-CHG-0602           9.5       7.5       5.5
+  BMS-REQ-CHG-0603           5.0       3.5       3.0
+  BMS-REQ-COM-0801          10.5       9.0       6.0
+  BMS-REQ-DIA-0702           4.0       5.0       1.0
+  BMS-REQ-DIA-0704          17.5      13.5      26.0
+  BMS-REQ-EST-0201          13.0      10.5      12.5
+  BMS-REQ-EST-0205          12.0       7.5      12.0
+  BMS-REQ-HVC-0301          17.0      13.0      14.5
+  BMS-REQ-HVC-0303           8.0       6.0       9.0
+  BMS-REQ-SEC-1004          12.0      15.5      12.5
+  BMS-REQ-SYS-0040           4.5       6.5       8.5
+  BMS-REQ-SYS-0050           8.5       8.5       9.0
+  BMS-REQ-SYS-0060          16.0      10.0      16.0
+  BMS-REQ-THM-0402           3.5       4.5       2.5
+  BMS-REQ-THM-0404           6.5      10.5       9.5
+
+  identical to the retriever comparison: nothing degraded
+
+==============================================================================
+RETRIEVER COMPARISON (only runs that used their own retriever)
+==============================================================================
+completion
+  arm         runs  completed   other  not started
+  none          40         40       0            0
+  lexical       40         40       0            0
+  hybrid        40         40       0            0
+
+mean per run (standard deviation in brackets)
+  metric                                                   none               lexical                hybrid
+  test drafts                                      1.93 (0.27)          2.00 (0.00)          2.00 (0.00)
+  open questions                                   9.65 (5.25)          8.80 (4.33)          9.80 (6.28)
+  unsupported values                               1.07 (1.99)          1.60 (2.20)          1.32 (1.79)   best: none
+  expectations without a criterion                 6.20 (4.35)          5.35 (3.97)          5.92 (4.67)   best: lexical
+  possible value conflicts                         0.00 (0.00)          0.75 (1.01)          1.05 (1.18)   best: none
+  findings a reviewer must work through            7.47 (4.33)          7.83 (4.31)          8.80 (5.99)   best: none
+  context items sent                               0.00 (0.00)          3.00 (0.64)          3.20 (0.52)
+    of those found by the task text                0.00 (0.00)          0.50 (0.60)          0.50 (0.60)
+  context values actually used                     0.00 (0.00)          0.07 (0.35)          0.05 (0.22)   best: lexical
+  model calls                                      1.02 (0.16)          1.12 (0.33)          1.02 (0.16)   best: none
+  repairs                                          0.03 (0.16)          0.12 (0.33)          0.03 (0.16)   best: none
+  seconds                                          7.26 (1.41)          8.80 (2.03)          8.38 (1.43)   best: none
+
+context: found is not sent, and sent is not used
+  arm         sent/run   by task    used   used/sent
+  none            0.00      0.00       0           -
+  lexical         3.00      0.50       3        0.03
+  hybrid          3.20      0.50       2        0.02
+
+paired comparison, over requirements present in every arm
+  20 of 20 requirement(s) have a counterpart in every arm
+  metric                                            none     lexical      hybrid
+  test drafts                                       1.93        2.00        2.00
+  open questions                                    9.65        8.80        9.80
+  unsupported values                                1.07        1.60        1.32
+  expectations without a criterion                  6.20        5.35        5.92
+  possible value conflicts                          0.00        0.75        1.05
+  findings a reviewer must work through             7.47        7.83        8.80
+  context items sent                                0.00        3.00        3.20
+    of those found by the task text                 0.00        0.50        0.50
+  context values actually used                      0.00        0.07        0.05
+  model calls                                       1.02        1.12        1.02
+  repairs                                           0.03        0.12        0.03
+  seconds                                           7.26        8.80        8.38
+
+per requirement: open questions, mean of the repetitions
+  requirement               none   lexical    hybrid
+  BMS-REQ-AFE-0101           5.5       3.5       5.5
+  BMS-REQ-AFE-0102           9.5      10.5      11.0
+  BMS-REQ-AFE-0106           9.0      10.0      10.5
+  BMS-REQ-BAL-0501          11.0      11.0      10.0
+  BMS-REQ-BAL-0504          10.5      10.0      11.5
+  BMS-REQ-CHG-0602           9.5       7.5       5.5
+  BMS-REQ-CHG-0603           5.0       3.5       3.0
+  BMS-REQ-COM-0801          10.5       9.0       6.0
+  BMS-REQ-DIA-0702           4.0       5.0       1.0
+  BMS-REQ-DIA-0704          17.5      13.5      26.0
+  BMS-REQ-EST-0201          13.0      10.5      12.5
+  BMS-REQ-EST-0205          12.0       7.5      12.0
+  BMS-REQ-HVC-0301          17.0      13.0      14.5
+  BMS-REQ-HVC-0303           8.0       6.0       9.0
+  BMS-REQ-SEC-1004          12.0      15.5      12.5
+  BMS-REQ-SYS-0040           4.5       6.5       8.5
+  BMS-REQ-SYS-0050           8.5       8.5       9.0
+  BMS-REQ-SYS-0060          16.0      10.0      16.0
+  BMS-REQ-THM-0402           3.5       4.5       2.5
+  BMS-REQ-THM-0404           6.5      10.5       9.5
+
+A reminder about what these numbers can and cannot say:
+  Fewer open questions is not a win on its own. A model that stops
+  asking because context made it confident is worse, not better. Read
+  'questions' together with 'unsupported values' and with the review
+  list; the drafts themselves still need a tester's judgement.
+
+  'context values actually used' counts only C_VALUE_FROM_CONTEXT: a
+  number lifted from a retrieved passage. A passage that explained an
+  operating state, a signal mapping or a fault reaction without
+  contributing a figure scores zero here and may still have helped.
+  Declining to take a value whose applicability is unclear is correct
+  behaviour, not a failure. The qualitative pair review answers what
+  this column cannot.
+
+  The 20 requirements were chosen because a prose question exists for
+  them, and those same questions were used to evaluate the retrievers.
+  This is a diagnostic comparison on known tasks, not an independent
+  final test, and not representative of the whole corpus.
