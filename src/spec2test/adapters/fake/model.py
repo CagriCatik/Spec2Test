@@ -99,6 +99,35 @@ class RuleBasedFakeModel:
             text=json.dumps(payload, ensure_ascii=False), duration_s=0.0, model=self.model
         )
 
+    @staticmethod
+    def _quote_for(text: str, needle: str) -> str | None:
+        """The line of the requirement that carries this value, or None.
+
+        None rather than a guess: a ground whose quote is not really in the
+        source is exactly the defect the check exists for, and a stand-in
+        that produces it would make every fixture fail for the wrong reason.
+        """
+        for line in text.splitlines():
+            if needle in line:
+                return line.strip()
+        return None
+
+    def _ground_for(self, body: str, ref: str, claim: str) -> dict:
+        """A sourced ground when the value can be quoted, a question if not."""
+        quote = self._quote_for(body, claim)
+        if ref and quote:
+            return {
+                "claim": claim,
+                "kind": "target_requirement",
+                "source": ref,
+                "quote": quote,
+            }
+        return {
+            "claim": claim,
+            "kind": "unresolved",
+            "question": f"Which source states {claim}?",
+        }
+
     # ------------------------------------------------------------------
     def _build(self, user_message: str) -> dict:
         refs = _REF.findall(user_message)
@@ -111,6 +140,11 @@ class RuleBasedFakeModel:
 
         expectations: list[str] = []
         measurements: list[dict] = []
+        # a real model is asked for grounds (prompt rule 11); the fake one
+        # supplies them too, otherwise every fixture would be unapprovable
+        # for a reason that has nothing to do with what the test is about
+        grounds: list[dict] = []
+        first_ref = refs[0] if refs else ""
         for value, unit in values[:3]:
             expectations.append(f"The observed value matches {value} {unit}")
             measurements.append(
@@ -121,8 +155,10 @@ class RuleBasedFakeModel:
                     "evidence": f"{value} {unit}",
                 }
             )
+            grounds.append(self._ground_for(body, first_ref, f"{value} {unit}"))
         for dtc in dtcs[:1]:
             expectations.append(f"Diagnostic trouble code {dtc} is stored")
+            grounds.append(self._ground_for(body, first_ref, dtc))
         for signal in signals[:1]:
             expectations.append(f"Signal {signal} reports the state")
 
@@ -154,6 +190,7 @@ class RuleBasedFakeModel:
                     "action": "Apply the stimulus described in the requirement",
                     "expectations": expectations,
                     "measurements": measurements,
+                    "grounds": grounds,
                 }
             ],
             "postconditions": [

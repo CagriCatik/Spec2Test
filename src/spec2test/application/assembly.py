@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Sequence
 
 from ..domain.models import (
+    GROUNDING_RULES_VERSION,
     Ground,
     GroundInput,
     GroundKind,
@@ -128,6 +129,8 @@ def build_test_case(
         review_status=ReviewStatus.DRAFT,  # a model answer always starts as draft
         revision=1,
         source_spans=tuple(span for req in resolved for span in req.spans),
+        # written now, so it is held to the rule that applies now
+        grounding_rules=GROUNDING_RULES_VERSION,
     )
 
 

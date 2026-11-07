@@ -188,6 +188,13 @@ class Measurement:
     evidence: str | None = None
 
 
+#: Version of the rule that says which claims need a ground. A test case
+#: records which version it was written under, so a draft from before the
+#: rule is marked as legacy instead of being retroactively declared checked.
+#: Bump this when the rule changes what a draft must provide.
+GROUNDING_RULES_VERSION = "1"
+
+
 class GroundKind(str, Enum):
     """Where a concrete expectation gets its authority from."""
 
@@ -361,16 +368,35 @@ class TestCase:
     needs_recheck: bool = False
     #: free-text note of the last review decision
     review_note: str | None = None
+    #: Which version of the grounding rule this revision was written under.
+    #: ``None`` means legacy: written before grounds were asked for. Such a
+    #: draft is marked as legacy, never retroactively claimed to be checked,
+    #: and stays approvable. Any new revision carries the current version and
+    #: has to meet it.
+    grounding_rules: str | None = None
+
+    @property
+    def is_legacy_grounding(self) -> bool:
+        return self.grounding_rules is None
 
     def with_status(self, status: ReviewStatus) -> "TestCase":
         return replace(self, review_status=status)
+
+    #: fields whose change is a technical revision of what the test asserts
+    TECHNICAL_FIELDS = ("preconditions", "steps", "postconditions")
 
     def next_revision(self, **changes) -> "TestCase":
         """Any edit produces a new revision and drops a previous approval.
 
         Accepted findings do not carry over: the new text has to be judged
         again, so an acceptance can never silently cover a new defect.
+
+        The grounding rule version rises only when the revision touches what
+        the test asserts. Correcting a title is not a technical revision and
+        must not retroactively demand grounds for values nobody touched.
         """
+        if any(field in changes for field in self.TECHNICAL_FIELDS):
+            changes.setdefault("grounding_rules", GROUNDING_RULES_VERSION)
         return replace(
             self,
             revision=self.revision + 1,

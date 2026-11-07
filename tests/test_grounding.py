@@ -151,10 +151,12 @@ def test_a_quoted_requirement_passes():
         source="SYS-REQ-0001",
         quote="Total response time to hardware latch assertion: 2.0 us",
     )
-    assert check_grounds(case_with(ground), [requirement()]) == []
+    assert codes(check_grounds(case_with(ground), [requirement()])) <= {
+        "I_CLAIM_WITHOUT_GROUND"
+    }
 
 
-def test_a_quote_that_is_not_there_is_an_error():
+def test_a_quote_that_is_not_there_blocks_approval_not_the_draft():
     ground = Ground(
         claim="1.0 us",
         kind=GroundKind.TARGET_REQUIREMENT,
@@ -162,8 +164,12 @@ def test_a_quote_that_is_not_there_is_an_error():
         quote="Total response time: 1.0 us",
     )
     issues = check_grounds(case_with(ground), [requirement()])
-    assert codes(issues) == {"E_GROUND_QUOTE_NOT_FOUND"}
-    assert issues[0].severity is Severity.ERROR
+    assert "C_GROUND_QUOTE_NOT_FOUND" in codes(issues)
+    wrong = next(i for i in issues if i.code == "C_GROUND_QUOTE_NOT_FOUND")
+    assert wrong.severity is Severity.CLARIFICATION
+    assert not any(i.severity is Severity.ERROR for i in issues), (
+        "a wrong ground must not stop the draft from being saved"
+    )
 
 
 def test_an_unknown_source_is_an_error():
@@ -173,9 +179,9 @@ def test_an_unknown_source_is_an_error():
         source="SYS-REQ-9999",
         quote="whatever",
     )
-    assert codes(check_grounds(case_with(ground), [requirement()])) == {
-        "E_GROUND_SOURCE_UNKNOWN"
-    }
+    assert "C_GROUND_SOURCE_UNKNOWN" in codes(
+        check_grounds(case_with(ground), [requirement()])
+    )
 
 
 def test_a_source_that_is_only_in_the_context_resolves(tmp_path):
@@ -185,13 +191,13 @@ def test_a_source_that_is_only_in_the_context_resolves(tmp_path):
         source="SYS-REQ-0099",
         quote="quenches the arc within 3 ms",
     )
-    assert check_grounds(
-        case_with(ground), [requirement()], context=[context_item()]
-    ) == []
+    assert codes(
+        check_grounds(case_with(ground), [requirement()], context=[context_item()])
+    ) <= {"I_CLAIM_WITHOUT_GROUND"}
     # ... and is an error when that context was not sent
-    assert codes(check_grounds(case_with(ground), [requirement()])) == {
-        "E_GROUND_SOURCE_UNKNOWN"
-    }
+    assert "C_GROUND_SOURCE_UNKNOWN" in codes(
+        check_grounds(case_with(ground), [requirement()])
+    )
 
 
 def test_a_table_prefix_counts_as_part_of_its_source():
@@ -214,7 +220,9 @@ def test_a_table_prefix_counts_as_part_of_its_source():
         source="SYS-REQ-0099",
         quote="DTC Hex Code | Diagnostic Name | Debounce Time",
     )
-    assert check_grounds(case_with(ground), [requirement()], context=[item]) == []
+    assert codes(
+        check_grounds(case_with(ground), [requirement()], context=[item])
+    ) <= {"I_CLAIM_WITHOUT_GROUND"}
 
 
 def test_markdown_and_whitespace_do_not_decide_a_quote():
@@ -224,7 +232,9 @@ def test_markdown_and_whitespace_do_not_decide_a_quote():
         source="SYS-REQ-0001",
         quote="  Total   response time  to hardware   latch assertion:  2.0 us ",
     )
-    assert check_grounds(case_with(ground), [requirement()]) == []
+    assert codes(check_grounds(case_with(ground), [requirement()])) <= {
+        "I_CLAIM_WITHOUT_GROUND"
+    }
 
 
 def test_a_source_without_a_quote_is_a_clarification():
@@ -232,7 +242,7 @@ def test_a_source_without_a_quote_is_a_clarification():
         claim="2.0 us", kind=GroundKind.TARGET_REQUIREMENT, source="SYS-REQ-0001"
     )
     issues = check_grounds(case_with(ground), [requirement()])
-    assert codes(issues) == {"C_GROUND_WITHOUT_QUOTE"}
+    assert "C_GROUND_WITHOUT_QUOTE" in codes(issues)
     assert issues[0].severity is Severity.CLARIFICATION
 
 
@@ -240,7 +250,7 @@ def test_a_source_without_a_quote_is_a_clarification():
 def test_an_unresolved_ground_must_carry_a_question():
     ground = Ground(claim="the rise time", kind=GroundKind.UNRESOLVED)
     issues = check_grounds(case_with(ground), [requirement()])
-    assert codes(issues) == {"E_GROUND_UNRESOLVED_WITHOUT_QUESTION"}
+    assert "C_GROUND_UNRESOLVED_WITHOUT_QUESTION" in codes(issues)
 
 
 def test_an_unresolved_ground_with_a_question_is_accepted():
@@ -250,7 +260,9 @@ def test_an_unresolved_ground_with_a_question_is_accepted():
         kind=GroundKind.UNRESOLVED,
         question="Which rise time should the injected pulse have?",
     )
-    assert check_grounds(case_with(ground), [requirement()]) == []
+    assert codes(check_grounds(case_with(ground), [requirement()])) <= {
+        "I_CLAIM_WITHOUT_GROUND"
+    }
 
 
 # ============================================== the rule inside validation ==
@@ -289,7 +301,7 @@ def test_a_wrong_ground_blocks_approval():
     )
     allowed, report = may_approve(case_with(ground), [requirement()])
     assert allowed is False
-    assert "E_GROUND_QUOTE_NOT_FOUND" in report.codes()
+    assert "C_GROUND_QUOTE_NOT_FOUND" in report.codes()
 
 
 def test_a_measurement_ground_is_checked_too():
@@ -315,7 +327,7 @@ def test_a_measurement_ground_is_checked_too():
             ),
         ),
     )
-    assert "E_GROUND_QUOTE_NOT_FOUND" in validate_test_case(case, [requirement()]).codes()
+    assert "C_GROUND_QUOTE_NOT_FOUND" in validate_test_case(case, [requirement()]).codes()
 
 
 # ================================================= contract and round trip ==
@@ -506,8 +518,8 @@ def test_the_cli_reports_grounds_of_a_stored_project(tmp_path, capsys):
     assert "3 draft(s)" in out
     assert "grounds stated: 2" in out
     assert "drafts without any ground: 1" in out
-    assert "grounds that do not check out: 1" in out
-    assert "E_GROUND_QUOTE_NOT_FOUND" in out
+    assert "grounds that do not check out:" in out
+    assert "C_GROUND_QUOTE_NOT_FOUND" in out
     assert target.read_bytes() == before, "the report must not rewrite the project"
 
 
@@ -574,3 +586,220 @@ def test_the_specification_shows_where_the_values_come_from(tmp_path):
     assert "target_requirement" in markdown and "SYS-REQ-0001" in markdown
     assert "I * R" in markdown
     assert "Which rise time should the pulse have?" in markdown
+
+
+# ================================ the rule version decides how it is weighed ==
+def _valued_case(**kwargs):
+    return TestCase(
+        case_id="TC-9",
+        title="t",
+        objective="o",
+        requirement_ids=("SYS-REQ-0001",),
+        steps=(TestStep(1, "measure", ("the latch asserts within 2.0 us",)),),
+        **kwargs,
+    )
+
+
+def test_a_stored_draft_from_before_the_rule_stays_approvable():
+    """No retroactive claim that an old draft was ever checked."""
+    from spec2test.domain.validation import may_approve
+
+    case = _valued_case()
+    assert case.is_legacy_grounding
+    report = validate_test_case(case, [requirement()])
+    assert "I_CLAIM_WITHOUT_GROUND" in report.codes()
+    assert all(
+        i.severity is Severity.INFO
+        for i in report.issues
+        if i.code.endswith("CLAIM_WITHOUT_GROUND")
+    )
+    allowed, _ = may_approve(case, [requirement()])
+    assert allowed, "an old draft must not become unapprovable overnight"
+
+
+def test_a_draft_written_under_the_rule_needs_grounds_to_be_approved():
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+    from spec2test.domain.validation import may_approve
+
+    case = _valued_case(grounding_rules=GROUNDING_RULES_VERSION)
+    report = validate_test_case(case, [requirement()])
+    assert "C_CLAIM_WITHOUT_GROUND" in report.codes()
+    allowed, _ = may_approve(case, [requirement()])
+    assert allowed is False
+
+
+def test_such_a_draft_can_still_be_saved():
+    """Only approval is stricter; a draft is still worth keeping."""
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+
+    report = validate_test_case(
+        _valued_case(grounding_rules=GROUNDING_RULES_VERSION), [requirement()]
+    )
+    assert report.blocks_draft is False
+    assert report.blocks_approval is True
+
+
+def test_a_documented_tester_reason_releases_it():
+    """The explicit justification the rule allows instead of a ground."""
+    from spec2test.domain.models import AcceptedFinding, GROUNDING_RULES_VERSION
+    from spec2test.domain.validation import may_approve
+
+    case = _valued_case(grounding_rules=GROUNDING_RULES_VERSION)
+    report = validate_test_case(case, [requirement()])
+    issue = next(i for i in report.issues if i.code == "C_CLAIM_WITHOUT_GROUND")
+    accepted = TestCase(
+        case_id=case.case_id,
+        title=case.title,
+        objective=case.objective,
+        requirement_ids=case.requirement_ids,
+        steps=case.steps,
+        grounding_rules=GROUNDING_RULES_VERSION,
+        accepted_findings=(
+            AcceptedFinding(
+                code=issue.code,
+                path=issue.path,
+                justification="agreed with the system owner on 2026-11-07",
+                by="anna",
+                at="2026-11-07T10:00:00+00:00",
+            ),
+        ),
+    )
+    allowed, _report = may_approve(accepted, [requirement()])
+    assert allowed, "a documented reason must be a way through"
+
+
+def test_only_a_technical_revision_raises_the_rule_version():
+    case = _valued_case()
+    assert case.next_revision(title="a better title").grounding_rules is None
+    revised = case.next_revision(
+        steps=(TestStep(1, "measure", ("the latch asserts within 1.0 us",)),)
+    )
+    assert revised.grounding_rules == "1"
+
+
+def test_a_generated_draft_is_held_to_the_current_rule():
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+
+    payload = _payload(
+        [
+            {
+                "claim": "2.0 us",
+                "kind": "target_requirement",
+                "source": "SYS-REQ-0001",
+                "quote": "Total response time to hardware latch assertion: 2.0 us",
+            }
+        ]
+    )
+    result = parse_model_response(json.dumps(payload))
+    cases, _ = build_from_response(result.response, [requirement()], unit_id="u")
+    assert cases[0].grounding_rules == GROUNDING_RULES_VERSION
+
+
+# ========================= one ground does not cover the whole test case =====
+def test_a_ground_for_one_value_does_not_cover_another():
+    """The hole the reviewer named: a quoted limit hiding three invented ones."""
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+
+    case = TestCase(
+        case_id="TC-10",
+        title="t",
+        objective="o",
+        requirement_ids=("SYS-REQ-0001",),
+        grounding_rules=GROUNDING_RULES_VERSION,
+        steps=(
+            TestStep(
+                1,
+                "measure",
+                (
+                    "the latch asserts within 2.0 us",
+                    "the threshold is 250 mV",
+                    "the recovery takes 500 ms",
+                ),
+                grounds=(
+                    Ground(
+                        claim="2.0 us",
+                        kind=GroundKind.TARGET_REQUIREMENT,
+                        source="SYS-REQ-0001",
+                        quote="Total response time to hardware latch assertion: 2.0 us",
+                    ),
+                ),
+            ),
+        ),
+    )
+    issues = check_grounds(case, [requirement()])
+    uncovered = {
+        i.message.split("'")[1]
+        for i in issues
+        if i.code == "C_CLAIM_WITHOUT_GROUND"
+    }
+    assert "250 mv" in uncovered and "500 ms" in uncovered
+    assert "2 µs" not in uncovered, "the grounded value must not be reported"
+
+
+def test_a_ground_in_another_step_does_not_count():
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+
+    ground = Ground(
+        claim="2.0 us",
+        kind=GroundKind.TARGET_REQUIREMENT,
+        source="SYS-REQ-0001",
+        quote="Total response time to hardware latch assertion: 2.0 us",
+    )
+    case = TestCase(
+        case_id="TC-11",
+        title="t",
+        objective="o",
+        requirement_ids=("SYS-REQ-0001",),
+        grounding_rules=GROUNDING_RULES_VERSION,
+        steps=(
+            TestStep(1, "prepare", (), grounds=(ground,)),
+            TestStep(2, "measure", ("the latch asserts within 2.0 us",)),
+        ),
+    )
+    paths = {
+        i.path for i in check_grounds(case, [requirement()])
+        if i.code == "C_CLAIM_WITHOUT_GROUND"
+    }
+    assert "TC-11.steps[1].expectations[0]" in paths
+
+
+def test_the_same_value_written_differently_still_counts_as_grounded():
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+
+    case = TestCase(
+        case_id="TC-12",
+        title="t",
+        objective="o",
+        requirement_ids=("SYS-REQ-0001",),
+        grounding_rules=GROUNDING_RULES_VERSION,
+        steps=(
+            TestStep(
+                1,
+                "measure",
+                ("the latch asserts within 2000 ns",),
+                grounds=(
+                    Ground(
+                        claim="2.0 us",
+                        kind=GroundKind.TARGET_REQUIREMENT,
+                        source="SYS-REQ-0001",
+                        quote="Total response time to hardware latch assertion: 2.0 us",
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert "C_CLAIM_WITHOUT_GROUND" not in codes(check_grounds(case, [requirement()]))
+
+
+def test_prose_without_a_value_needs_no_ground():
+    from spec2test.domain.models import GROUNDING_RULES_VERSION
+
+    case = TestCase(
+        case_id="TC-13",
+        title="t",
+        objective="o",
+        requirement_ids=("SYS-REQ-0001",),
+        grounding_rules=GROUNDING_RULES_VERSION,
+        steps=(TestStep(1, "observe", ("the system returns to a safe state",)),),
+    )
+    assert check_grounds(case, [requirement()]) == []

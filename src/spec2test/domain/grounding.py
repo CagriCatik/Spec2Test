@@ -6,8 +6,11 @@ What is checked here is narrow on purpose:
   that was sent, and the quote really appears in it;
 * a calculation's inputs each have their own source, and the arithmetic
   works out;
-* an expectation that carries a value has a ground at all, and an
-  unresolved one is an open question rather than a binding expectation.
+* **every** concrete value has a ground of its own. One correct ground
+  somewhere in the case is not enough: it would let a quoted limit cover
+  three invented ones standing next to it;
+* an unresolved value is an open question rather than a binding
+  expectation.
 
 What is **not** checked, and cannot be: whether the value is the right one
 for this test. ``HW_Comparator_Reference_Voltage`` may be quoted correctly
@@ -16,6 +19,12 @@ tester; this only makes the claim followable.
 
 The model proposes the grounds. A missing or wrong one is a finding, never
 a silent repair: inventing a source would defeat the purpose.
+
+**Every finding here is a clarification, not an error.** Saving a draft
+stays possible; what a wrong ground blocks is the approval. Rejecting a
+whole draft and spending a repair call because one quote is a few words
+off would cost more than it is worth, and the draft is still the best
+starting point a reviewer has.
 """
 from __future__ import annotations
 
@@ -23,9 +32,22 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-from .models import Ground, GroundKind, Requirement, Severity, TestCase
+from .models import (
+    GROUNDING_RULES_VERSION,
+    Ground,
+    GroundKind,
+    Requirement,
+    Severity,
+    TestCase,
+    TestStep,
+)
 from .validation import ValidationIssue, normalise_math
 
+#: ``0x9A0201``. The corpus writes diagnostic codes this way; the existing
+#: unsupported-value rule only knows the ``P0A80`` form. Widening that rule
+#: would change what every draft is judged on, so the hex form is recognised
+#: here only, where it means "this is a concrete value and needs a source".
+_HEX_CODE = re.compile(r"\b0x[0-9A-Fa-f]{2,8}\b")
 #: ``2550 A``, ``100 uOhm``, ``-0.5 V``. Shared with the arithmetic check.
 _VALUE = re.compile(
     r"(?P<value>[-+]?\d+(?:[.,]\d+)?)\s*(?P<unit>[^\s\d*/=+-]{0,12})"
@@ -148,15 +170,132 @@ def check_calculation(ground: Ground) -> str | None:
     )
 
 
+def claims_of(step: TestStep) -> list[tuple[str, str]]:
+    """The concrete claims of one step: (what was claimed, where).
+
+    A claim is a value that could be wrong: a number with a unit, or a DTC
+    code. Prose without a value is not a claim - "the system reaches
+    standby" needs no source, "within 50 ms" does.
+    """
+    from .validation import _dtc_claims, _numeric_claims
+
+    found: list[tuple[str, str]] = []
+    for index, expectation in enumerate(step.expectations):
+        for value, unit in sorted(_numeric_claims(expectation)):
+            found.append((_format_claim(value, unit), f"expectations[{index}]"))
+        for dtc in sorted(_dtc_claims(expectation)):
+            found.append((dtc, f"expectations[{index}]"))
+        for code in sorted({m.group(0).lower() for m in _HEX_CODE.finditer(expectation)}):
+            found.append((code, f"expectations[{index}]"))
+    for index, measurement in enumerate(step.measurements):
+        if measurement.value is None or not str(measurement.value).strip():
+            continue
+        for value, unit in sorted(
+            _numeric_claims(f"{measurement.value} {measurement.unit or ''}")
+        ):
+            found.append((_format_claim(value, unit), f"measurements[{index}]"))
+    # the same value twice in one step is one claim
+    seen: set[str] = set()
+    unique = []
+    for claim, where in found:
+        if claim in seen:
+            continue
+        seen.add(claim)
+        unique.append((claim, where))
+    return unique
+
+
+def _format_claim(value: float, unit: str) -> str:
+    number = f"{value:g}"
+    return f"{number} {unit}".strip()
+
+
+def _ground_covers(ground: Ground, claim: str) -> bool:
+    """Does this ground speak about this claim?
+
+    Compared by value and unit, not by string: ``0.05 s`` and ``50 ms`` are
+    the same claim, and a ground that writes it the other way still counts.
+    """
+    from .validation import _dtc_claims, _numeric_claims
+
+    text = ground.claim
+    if claim in _dtc_claims(text):
+        return True
+    if claim.startswith("0x") and claim in {
+        m.group(0).lower() for m in _HEX_CODE.finditer(text)
+    }:
+        return True
+    wanted = _numeric_claims(claim)
+    if not wanted:
+        return claim.strip().lower() in text.strip().lower()
+    mine = _numeric_claims(text)
+    if wanted & mine:
+        return True
+    # the units may differ in scale: compare in base units
+    target = _as_si(claim)
+    if target is None:
+        return False
+    for value, unit in mine:
+        other = _as_si(_format_claim(value, unit))
+        if other is None or other[1] != target[1]:
+            continue
+        if abs(other[0] - target[0]) <= max(abs(target[0]) * 1e-9, 1e-15):
+            return True
+    return False
+
+
+def missing_grounds(
+    case: TestCase, *, severity: Severity
+) -> list[ValidationIssue]:
+    """Concrete values that no ground of their own step speaks about."""
+    issues: list[ValidationIssue] = []
+    for label, steps in (
+        ("preconditions", case.preconditions),
+        ("steps", case.steps),
+        ("postconditions", case.postconditions),
+    ):
+        for index, step in enumerate(steps):
+            for claim, origin in claims_of(step):
+                if any(_ground_covers(g, claim) for g in step.grounds):
+                    continue
+                issues.append(
+                    ValidationIssue(
+                        "C_CLAIM_WITHOUT_GROUND"
+                        if severity is Severity.CLARIFICATION
+                        else "I_CLAIM_WITHOUT_GROUND",
+                        severity,
+                        f"{case.case_id}.{label}[{index}].{origin}",
+                        f"{claim!r} is stated as a fact but no ground of this "
+                        "step says where it comes from. Name the requirement "
+                        "or context that states it, show the calculation, or "
+                        "turn it into an open question.",
+                    )
+                )
+    return issues
+
+
 def check_grounds(
     case: TestCase,
     requirements: Sequence[Requirement],
     *,
     context: Sequence = (),
 ) -> list[ValidationIssue]:
-    """Every ground of this draft, checked against what it names."""
+    """Every ground checked against what it names, and every claim covered.
+
+    How a missing ground is weighed depends on the rule version the draft
+    was written under. A draft from before the rule is marked as legacy and
+    stays approvable; a draft written under the current rule must cover its
+    concrete values or carry a reviewer's documented reason for not doing
+    so. A ground that is *wrong* is an error either way.
+    """
     issues: list[ValidationIssue] = []
     sources = _sources(requirements, context)
+    legacy = case.grounding_rules != GROUNDING_RULES_VERSION
+    issues.extend(
+        missing_grounds(
+            case, severity=Severity.INFO if legacy else Severity.CLARIFICATION
+        )
+    )
 
     for label, steps in (
         ("preconditions", case.preconditions),
@@ -177,8 +316,8 @@ def _check_one(
     if ground.kind is GroundKind.UNRESOLVED:
         if not (ground.question or "").strip():
             yield ValidationIssue(
-                "E_GROUND_UNRESOLVED_WITHOUT_QUESTION",
-                Severity.ERROR,
+                "C_GROUND_UNRESOLVED_WITHOUT_QUESTION",
+                Severity.CLARIFICATION,
                 where,
                 f"{ground.claim!r} is marked as unresolved but carries no "
                 "open question. An unresolved value must become a question, "
@@ -189,8 +328,8 @@ def _check_one(
     if ground.needs_a_source:
         if not (ground.source or "").strip():
             yield ValidationIssue(
-                "E_GROUND_WITHOUT_SOURCE",
-                Severity.ERROR,
+                "C_GROUND_WITHOUT_SOURCE",
+                Severity.CLARIFICATION,
                 where,
                 f"{ground.claim!r} claims to come from the "
                 f"{ground.kind.value.replace('_', ' ')} but names no source.",
@@ -199,8 +338,8 @@ def _check_one(
         source = sources.get(ground.source)
         if source is None:
             yield ValidationIssue(
-                "E_GROUND_SOURCE_UNKNOWN",
-                Severity.ERROR,
+                "C_GROUND_SOURCE_UNKNOWN",
+                Severity.CLARIFICATION,
                 where,
                 f"{ground.claim!r} cites {ground.source!r}, which is neither "
                 "a requirement under test nor a context item that was sent.",
@@ -216,8 +355,8 @@ def _check_one(
             )
         elif not _quote_is_in(ground.quote, source.text):
             yield ValidationIssue(
-                "E_GROUND_QUOTE_NOT_FOUND",
-                Severity.ERROR,
+                "C_GROUND_QUOTE_NOT_FOUND",
+                Severity.CLARIFICATION,
                 where,
                 f"the quote for {ground.claim!r} does not appear in "
                 f"{ground.source}: {ground.quote[:120]!r}",
@@ -228,16 +367,16 @@ def _check_one(
         for position, item in enumerate(ground.inputs):
             if item.source not in sources:
                 yield ValidationIssue(
-                    "E_GROUND_SOURCE_UNKNOWN",
-                    Severity.ERROR,
+                    "C_GROUND_SOURCE_UNKNOWN",
+                    Severity.CLARIFICATION,
                     f"{where}.inputs[{position}]",
                     f"the input {item.value!r} cites {item.source!r}, which "
                     "is neither a requirement under test nor a context item.",
                 )
             elif item.quote and not _quote_is_in(item.quote, sources[item.source].text):
                 yield ValidationIssue(
-                    "E_GROUND_QUOTE_NOT_FOUND",
-                    Severity.ERROR,
+                    "C_GROUND_QUOTE_NOT_FOUND",
+                    Severity.CLARIFICATION,
                     f"{where}.inputs[{position}]",
                     f"the quote for the input {item.value!r} does not appear "
                     f"in {item.source}: {item.quote[:120]!r}",
