@@ -62,6 +62,18 @@ generation:
   # Build the index with: spec2test run --retrieval --knowledge requirements
   use_retrieval: false
   max_search_items: 3
+  # retrieval: how the knowledge base is searched when use_retrieval is on.
+  #   lexical  SQLite FTS5 / BM25. Perfect on requirement IDs, strong on
+  #            signal names, nearly blind on a question written in prose.
+  #   hybrid   the same passages, BM25 fused with embeddings. Keeps the exact
+  #            matches and finds the source of a prose question about twice as
+  #            often. Needs: pip install -e ".[embeddings]" and
+  #            ollama pull nomic-embed-text. Falls back to lexical with a
+  #            warning when the model cannot be reached.
+  # Measured in docs/benchmarks/retrieval-sources.md. Default stays lexical
+  # until the effect on the written drafts has been measured too.
+  retrieval: lexical
+  embedding_model: nomic-embed-text
   job_timeout_s: 900         # bounded runtime per job
   # Legacy flat path only (core.generate_test_cases, for existing scripts).
   # The window no longer offers these; they do not affect a normal run.

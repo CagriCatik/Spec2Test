@@ -1,0 +1,72 @@
+corpus: 22 document(s), 203 passage(s)
+queries: 60 (exact_id 20, paraphrase 20, signal_name 20)
+a hit counts when the expected passage is in the first 10
+
+exact_id  (20 queries)
+  retriever                             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)                           1.00       1.00       1.00       1.000    0.000     0
+  embeddings (ollama/nomic-embed-text)  0.05       0.15       0.20       0.114    0.045     13
+  hybrid (rank fusion)                  1.00       1.00       1.00       1.000    0.053     0
+
+paraphrase  (20 queries)
+  retriever                             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)                           0.10       0.20       0.25       0.172    0.001     12
+  embeddings (ollama/nomic-embed-text)  0.15       0.50       0.65       0.369    0.057     4
+  hybrid (rank fusion)                  0.20       0.35       0.50       0.314    0.060     8
+
+signal_name  (20 queries)
+  retriever                             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)                           0.90       1.00       1.00       0.942    0.000     0
+  embeddings (ollama/nomic-embed-text)  0.35       0.65       0.75       0.531    0.048     2
+  hybrid (rank fusion)                  0.90       0.95       0.95       0.932    0.046     0
+
+all queries  (60 queries)
+  retriever                             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)                           0.67       0.73       0.75       0.705    0.000     12
+  embeddings (ollama/nomic-embed-text)  0.18       0.43       0.53       0.338    0.052     19
+  hybrid (rank fusion)                  0.70       0.77       0.82       0.749    0.052     8
+
+
+misses, by retriever:
+  fts5 (bm25)
+    [paraphrase] para-BMS-REQ-AFE-0101: How often are the individual cell voltages read, and what happens to a
+    [paraphrase] para-BMS-REQ-AFE-0102: How does the system notice that a measuring lead to a cell has come lo
+    [paraphrase] para-BMS-REQ-AFE-0106: How is it checked that the high-voltage side is still properly separat
+    [paraphrase] para-BMS-REQ-HVC-0303: How is a contactor that has stuck together and no longer opens detecte
+    [paraphrase] para-BMS-REQ-EST-0201: How is the remaining charge of the battery worked out while the car is
+    [paraphrase] para-BMS-REQ-EST-0205: How much power may be drawn or fed back at this moment, and for how lo
+    [paraphrase] para-BMS-REQ-SYS-0050: What does the battery do when the car has an accident?
+    [paraphrase] para-BMS-REQ-BAL-0501: Under which conditions is equalising the cells allowed to start, and w
+    [paraphrase] para-BMS-REQ-THM-0404: How much time do the occupants get to leave the car before it may burn
+    [paraphrase] para-BMS-REQ-DIA-0702: How is the available power reduced step by step once a fault has been 
+    [paraphrase] para-BMS-REQ-CHG-0602: How does the charging current behave as the pack approaches a full sta
+    [paraphrase] para-BMS-REQ-COM-0801: How regularly does the battery send its measured values onto the bus, 
+  embeddings (ollama/nomic-embed-text)
+    [exact_id] id-BMS-REQ-AFE-0101: BMS-REQ-AFE-0101
+    [exact_id] id-BMS-REQ-AFE-0102: BMS-REQ-AFE-0102
+    [exact_id] id-BMS-REQ-AFE-0103: BMS-REQ-AFE-0103
+    [exact_id] id-BMS-REQ-AFE-0105: BMS-REQ-AFE-0105
+    [exact_id] id-BMS-REQ-AFE-0106: BMS-REQ-AFE-0106
+    [exact_id] id-BMS-REQ-AUX-1402: BMS-REQ-AUX-1402
+    [exact_id] id-BMS-REQ-BAL-0501: BMS-REQ-BAL-0501
+    [exact_id] id-BMS-REQ-BAL-0502: BMS-REQ-BAL-0502
+    [exact_id] id-BMS-REQ-BAL-0503: BMS-REQ-BAL-0503
+    [exact_id] id-BMS-REQ-BAL-0504: BMS-REQ-BAL-0504
+    [exact_id] id-BMS-REQ-BAL-0505: BMS-REQ-BAL-0505
+    [exact_id] id-BMS-REQ-BRK-1702: BMS-REQ-BRK-1702
+    [exact_id] id-BMS-REQ-BRK-1703: BMS-REQ-BRK-1703
+    [signal_name] signal-Pack_T_Avg: Pack_T_Avg
+    [signal_name] signal-V_i: V_i
+    [paraphrase] para-BMS-REQ-HVC-0301: What has to happen in which order before the main contactors may close
+    [paraphrase] para-BMS-REQ-EST-0201: How is the remaining charge of the battery worked out while the car is
+    [paraphrase] para-BMS-REQ-SYS-0050: What does the battery do when the car has an accident?
+    [paraphrase] para-BMS-REQ-CHG-0602: How does the charging current behave as the pack approaches a full sta
+  hybrid (rank fusion)
+    [paraphrase] para-BMS-REQ-AFE-0101: How often are the individual cell voltages read, and what happens to a
+    [paraphrase] para-BMS-REQ-AFE-0102: How does the system notice that a measuring lead to a cell has come lo
+    [paraphrase] para-BMS-REQ-AFE-0106: How is it checked that the high-voltage side is still properly separat
+    [paraphrase] para-BMS-REQ-HVC-0301: What has to happen in which order before the main contactors may close
+    [paraphrase] para-BMS-REQ-HVC-0303: How is a contactor that has stuck together and no longer opens detecte
+    [paraphrase] para-BMS-REQ-SYS-0050: What does the battery do when the car has an accident?
+    [paraphrase] para-BMS-REQ-CHG-0602: How does the charging current behave as the pack approaches a full sta
+    [paraphrase] para-BMS-REQ-COM-0801: How regularly does the battery send its measured values onto the bus, 

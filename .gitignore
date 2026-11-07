@@ -33,6 +33,8 @@ Desktop.ini
 
 # Generated run data (the CLI and GUI write here by default)
 runs/
+# the benchmark's own index and vector cache, rebuilt by the script
+docs/benchmarks/.retrieval-bench/
 
 # Knowledge index (rebuilt from the documents at any time)
 .spec2test/

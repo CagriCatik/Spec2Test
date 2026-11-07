@@ -121,5 +121,28 @@ Two separate problems, and neither is solved by embeddings:
    it has to be re-measured.
 
 Repeating this comparison with `l1-test-draft-4` is the next measurement.
-Before that number exists, adding an embedding index would be optimising a
-component that is not the bottleneck.
+
+## What the source-finding measurement changed about this
+
+The sentence that stood here - that an embedding index would be optimising a
+component that is not the bottleneck - was a guess, and
+[retrieval-sources.md](retrieval-sources.md) has now measured it. It holds
+for one half and fails for the other:
+
+* For the queries this pipeline actually issues during generation, lists of
+  identifiers and keywords from a requirement, BM25 is near perfect
+  (MRR 0.94 on signal names, 1.00 on exact IDs). Retrieval is indeed not the
+  bottleneck there, and point 1 above stands: the problem is passage
+  granularity, not ranking.
+* For a question written in prose - the free "Task for this run" field -
+  BM25 finds nothing at all in 12 of 20 cases. There retrieval is the
+  bottleneck, and embeddings more than double the hit rate.
+
+So the conclusion holds for the comparison above and does not generalise. A
+hybrid retriever is now available (`generation.retrieval: hybrid`, off by
+default) and the two measurements left to do are, in this order:
+
+1. repeat the table above with `l1-test-draft-4`, lexical, to see whether
+   the prompt fix changed the picture;
+2. then the same table with `retrieval: hybrid`, to see whether better
+   source finding reaches the drafts at all.

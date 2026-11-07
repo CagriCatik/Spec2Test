@@ -125,3 +125,38 @@ class RunStorePort(Protocol):
 @runtime_checkable
 class ExportPort(Protocol):
     def export(self, run: GenerationRun, target: Path) -> Path: ...
+
+# -------------------------------------------------------------- retrieval ---
+@runtime_checkable
+class KnowledgePort(Protocol):
+    """A retriever over the indexed passages of the knowledge base.
+
+    Both the lexical index and the embedding index satisfy this. They share
+    the passages, the IDs and the provenance; only the ranking differs, which
+    is what makes a comparison between them meaningful.
+
+    ``score``: smaller is better, as BM25 reports it. A cosine retriever
+    returns the negated similarity so the application's relevance cut-off
+    works unchanged for both.
+    """
+
+    def search(
+        self,
+        terms: Sequence[str],
+        *,
+        limit: int = 5,
+        kinds: Sequence[object] | None = None,
+        exclude_documents: Sequence[str] = (),
+        exclude_passages: Sequence[str] = (),
+    ) -> Sequence[object]:
+        ...
+
+
+class EmbeddingPort(Protocol):
+    """Turns text into vectors. One call per batch, so a model is loaded once."""
+
+    #: what the record names as the source of the vectors
+    name: str
+
+    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        ...

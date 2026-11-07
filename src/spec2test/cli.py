@@ -241,13 +241,17 @@ def _cmd_run(args) -> int:
     if gen_settings.use_retrieval:
         from .adapters.knowledge import SqliteKnowledgeIndex
         from .application.indexing import collect_documents, sync_index
+        from .bootstrap import build_knowledge
 
         index_path = args.index or (Path.cwd() / ".spec2test" / "knowledge.db")
-        knowledge = SqliteKnowledgeIndex(index_path)
         folder = args.knowledge
         if folder is not None:
+            # the index is written first: only the lexical store can be
+            # written to, and the retriever is built over its final content
             report_sync = sync_index(
-                knowledge, collect_documents(folder), build_importers()
+                SqliteKnowledgeIndex(index_path),
+                collect_documents(folder),
+                build_importers(),
             )
             _out(f"knowledge index {index_path}: {report_sync.summary()}")
             for document in report_sync.documents.values():
@@ -264,6 +268,7 @@ def _cmd_run(args) -> int:
             )
         else:
             _out(f"knowledge index {index_path}: reused as it is")
+        knowledge = build_knowledge(index_path, gen_settings, log=_out)
 
     if gen_settings.use_reference_context:
         report = reference_report(catalogue)

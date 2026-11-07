@@ -217,9 +217,11 @@ class DraftTask(QRunnable):
 
         knowledge = None
         if gen_settings.use_retrieval and self.index_path:
-            from ..adapters.knowledge import SqliteKnowledgeIndex
+            from ..bootstrap import build_knowledge
 
-            knowledge = SqliteKnowledgeIndex(self.index_path)
+            knowledge = build_knowledge(
+                self.index_path, gen_settings, log=self.signals.message.emit
+            )
             self.signals.message.emit(f"Knowledge index: {self.index_path}")
 
         def on_progress(update: ProgressUpdate) -> None:

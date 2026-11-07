@@ -23,6 +23,9 @@ dependencies = [
 gui = ["PySide6>=6.7", "pandas>=2.2", "openpyxl>=3.1", "tqdm>=4.66"]
 # optional retrieval augmentation of the legacy path
 rag = ["scikit-learn>=1.4"]
+# semantic retrieval: the vectors come from a local Ollama embedding model,
+# so nothing is downloaded at import time. See docs/benchmarks/retrieval-sources.md
+embeddings = ["llama-index-core>=0.14", "llama-index-embeddings-ollama>=0.8"]
 dev = ["pytest>=8.2"]
 
 [project.scripts]

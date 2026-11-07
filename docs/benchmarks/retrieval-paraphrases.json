@@ -1,0 +1,87 @@
+{
+  "purpose": "Authored prose questions for the source-finding benchmark. Only the wording below is written by hand; the expected passage is the requirement named in 'requirement', resolved against the corpus at run time so a wrong ID fails loudly. The questions deliberately avoid the identifiers and the title wording of their requirement - that is the point of the family: lexical search has nothing to match on.",
+  "corpus": "requirements/*.md",
+  "authored_by": "Claude (not a tester assessment: these are search queries, not quality judgements)",
+  "questions": [
+    {
+      "requirement": "BMS-REQ-AFE-0101",
+      "question": "How often are the individual cell voltages read, and what happens to a single implausible reading among them?"
+    },
+    {
+      "requirement": "BMS-REQ-AFE-0102",
+      "question": "How does the system notice that a measuring lead to a cell has come loose?"
+    },
+    {
+      "requirement": "BMS-REQ-AFE-0106",
+      "question": "How is it checked that the high-voltage side is still properly separated from the car body?"
+    },
+    {
+      "requirement": "BMS-REQ-HVC-0301",
+      "question": "What has to happen in which order before the main contactors may close?"
+    },
+    {
+      "requirement": "BMS-REQ-HVC-0303",
+      "question": "How is a contactor that has stuck together and no longer opens detected?"
+    },
+    {
+      "requirement": "BMS-REQ-EST-0201",
+      "question": "How is the remaining charge of the battery worked out while the car is driving?"
+    },
+    {
+      "requirement": "BMS-REQ-EST-0205",
+      "question": "How much power may be drawn or fed back at this moment, and for how long?"
+    },
+    {
+      "requirement": "BMS-REQ-SYS-0040",
+      "question": "How does the control unit notice that a high-voltage connector has been opened?"
+    },
+    {
+      "requirement": "BMS-REQ-SYS-0050",
+      "question": "What does the battery do when the car has an accident?"
+    },
+    {
+      "requirement": "BMS-REQ-SYS-0060",
+      "question": "What can wake the control unit again once it has gone to sleep?"
+    },
+    {
+      "requirement": "BMS-REQ-BAL-0501",
+      "question": "Under which conditions is equalising the cells allowed to start, and when is it forbidden?"
+    },
+    {
+      "requirement": "BMS-REQ-BAL-0504",
+      "question": "How is a discharge switch that no longer opens or no longer closes found?"
+    },
+    {
+      "requirement": "BMS-REQ-THM-0402",
+      "question": "What happens when the pack is too cold to be charged?"
+    },
+    {
+      "requirement": "BMS-REQ-THM-0404",
+      "question": "How much time do the occupants get to leave the car before it may burn, and how are they told?"
+    },
+    {
+      "requirement": "BMS-REQ-DIA-0702",
+      "question": "How is the available power reduced step by step once a fault has been confirmed?"
+    },
+    {
+      "requirement": "BMS-REQ-DIA-0704",
+      "question": "Which values are stored alongside a fault so the cause can be reconstructed later?"
+    },
+    {
+      "requirement": "BMS-REQ-CHG-0602",
+      "question": "How does the charging current behave as the pack approaches a full state near the end of charging?"
+    },
+    {
+      "requirement": "BMS-REQ-CHG-0603",
+      "question": "What is done when the plug on the car gets too hot while charging?"
+    },
+    {
+      "requirement": "BMS-REQ-SEC-1004",
+      "question": "How is someone stopped from guessing the service access code over and over?"
+    },
+    {
+      "requirement": "BMS-REQ-COM-0801",
+      "question": "How regularly does the battery send its measured values onto the bus, and how much may that timing wander?"
+    }
+  ]
+}

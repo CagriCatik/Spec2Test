@@ -60,6 +60,14 @@ class GenerationSettings:
     #: add full-text hits from the knowledge index on top of the references
     use_retrieval: bool = False
     max_search_items: int = 3
+    #: "lexical" (BM25 only) or "hybrid" (BM25 fused with embeddings).
+    #: Measured on this corpus, hybrid finds the source of a prose question
+    #: twice as often and keeps BM25's perfect exact-ID retrieval, at the cost
+    #: of an embedding model. It stays opt-in until the effect on the written
+    #: drafts has been measured as well.
+    retrieval: str = "lexical"
+    #: the Ollama embedding model used when retrieval == "hybrid"
+    embedding_model: str = "nomic-embed-text"
 
 
 #: measured mean duration of one unit against a cloud model, for the estimate

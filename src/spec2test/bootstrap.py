@@ -151,6 +151,8 @@ def generation_settings_from_config(config: dict[str, Any]) -> GenerationSetting
         use_reference_context=bool(gen.get("use_reference_context", True)),
         use_retrieval=bool(gen.get("use_retrieval", False)),
         max_search_items=max(0, int(gen.get("max_search_items", 3))),
+        retrieval=str(gen.get("retrieval", "lexical")).strip().lower(),
+        embedding_model=str(gen.get("embedding_model", "nomic-embed-text")),
         context_char_budget=max(0, int(gen.get("context_char_budget", 6_000))),
         max_context_items=max(0, int(gen.get("max_context_items", 5))),
         max_cases_per_unit=max(1, int(max_cases)),
@@ -192,3 +194,46 @@ def build_model(
 
 def build_importers() -> Sequence[DocumentImportPort]:
     return DEFAULT_IMPORTERS
+
+def build_knowledge(index_path, settings, *, log=None):
+    """The retriever a run should use, from the settings.
+
+    ``lexical``  the SQLite/FTS5 index alone.
+    ``hybrid``   the same index fused with embeddings of the same passages.
+                 When the embedding model cannot be reached the run falls
+                 back to lexical and says so: a missing model must not stop a
+                 generation, but it must not pass unnoticed either.
+    """
+    from .adapters.knowledge import SqliteKnowledgeIndex
+
+    lexical = SqliteKnowledgeIndex(index_path)
+    if settings.retrieval != "hybrid":
+        return lexical
+
+    from .adapters.knowledge import (
+        EmbeddingUnavailable,
+        HybridKnowledgeIndex,
+        OllamaEmbedder,
+        VectorKnowledgeIndex,
+    )
+
+    cache = Path(index_path).with_suffix(".vectors.json")
+    vector = VectorKnowledgeIndex(
+        lexical, OllamaEmbedder(model=settings.embedding_model), cache_path=cache
+    )
+    try:
+        embedded = vector.build()
+    except EmbeddingUnavailable as exc:
+        if log:
+            log(
+                f"warning: hybrid retrieval was requested but is unavailable "
+                f"({exc}). Falling back to lexical search."
+            )
+        return lexical
+    if log:
+        log(
+            f"hybrid retrieval: {settings.embedding_model}, "
+            f"{embedded} passage(s) embedded in this run"
+        )
+    return HybridKnowledgeIndex(lexical, vector)
+
