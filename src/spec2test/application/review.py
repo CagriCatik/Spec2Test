@@ -19,6 +19,7 @@ from typing import Iterable, Sequence
 
 from ..domain.models import (
     AcceptedFinding,
+    ContextItem,
     GenerationRun,
     OpenQuestion,
     Project,
@@ -372,7 +373,9 @@ def accept_finding(
     if not justification.strip():
         raise ReviewError("accepting a finding needs a reason")
 
-    report = validate_test_case(case, project.requirements)
+    report = validate_test_case(
+        case, project.requirements, context=context_for_case(project, case_id)
+    )
     match = next(
         (i for i in report.issues if i.code == code and i.path == path), None
     )
@@ -449,6 +452,28 @@ def relevant_project_questions(project: Project, case: TestCase) -> list[OpenQue
     ]
 
 
+def context_for_case(project: Project, case_id: str) -> list[ContextItem]:
+    """The supporting context this draft was generated with.
+
+    Every later validation has to use it. Generation validates with the
+    context, so a value taken from a retrieved passage is reported as
+    C_VALUE_FROM_CONTEXT. Revalidating without it turns the same value into
+    C_UNSUPPORTED_VALUE and loses the provenance the run recorded.
+    """
+    items: list[ContextItem] = []
+    seen: set[str] = set()
+    for run in project.runs:
+        for unit in run.units:
+            if not any(case.case_id == case_id for case in unit.test_cases):
+                continue
+            for item in unit.context:
+                if item.requirement_id in seen:
+                    continue
+                seen.add(item.requirement_id)
+                items.append(item)
+    return items
+
+
 def approval_report(project: Project, case_id: str) -> tuple[bool, ValidationReport]:
     """Re-run the deterministic validation for this exact revision."""
     case = _require_case(project, case_id)
@@ -459,6 +484,7 @@ def approval_report(project: Project, case_id: str) -> tuple[bool, ValidationRep
             *case.unresolved_questions,
             *relevant_project_questions(project, case),
         ),
+        context=context_for_case(project, case_id),
     )
 
 
@@ -648,7 +674,11 @@ def recheck_all(project: Project, *, by: str = DEFAULT_REVIEWER) -> list[TestCas
 def validation_overview(project: Project) -> dict[str, ValidationReport]:
     """Current findings per draft, recomputed from the stored data."""
     return {
-        case.case_id: validate_test_case(case, project.requirements)
+        case.case_id: validate_test_case(
+            case,
+            project.requirements,
+            context=context_for_case(project, case.case_id),
+        )
         for case in project.test_cases
     }
 

@@ -35,6 +35,16 @@ DEFAULT_SCORE_RATIO = 0.4
 #: kinds the search looks at first: they carry signal names and value ranges
 PREFERRED_KINDS = (ContextKind.SIGNAL, ContextKind.INTERFACE)
 FALLBACK_KINDS = (ContextKind.EXPLANATION, ContextKind.REFERENCE_TEST)
+#: other requirements of the knowledge base. Two thirds of a typical index are
+#: requirement passages; leaving them out made most of it unreachable unless a
+#: document happened to cite them by ID.
+REQUIREMENT_KINDS = (ContextKind.REQUIREMENT,)
+#: searched in this order, each tier judged against its own best hit
+SEARCH_TIERS = (PREFERRED_KINDS, FALLBACK_KINDS, REQUIREMENT_KINDS)
+#: share of the character budget held back for a related requirement while one
+#: matched. A reserved slot alone does nothing: signal sections run to ~2300
+#: characters each and two of them exhaust the whole budget.
+REQUIREMENT_BUDGET_SHARE = 0.35
 
 from ..domain.validation import _numeric_claims as _claims_of
 
@@ -198,14 +208,14 @@ def build_context(
     used = sum(item.size for item in items)
     taken_passages = {item.requirement_id for item in items}
     taken_external = {item.external_id for item in items if item.external_id}
-    own_documents = {
-        span.document_id for r in under_test for span in r.spans
-    }
     own_passages = {
         f"{span.document_id}:req:{span.char_start}"
         for r in under_test
         for span in r.spans
     }
+    # a requirement under test must never come back as its own context, not
+    # even from a second document that repeats its ID
+    own_external = {r.external_id for r in under_test if r.external_id}
     search_slots = max_search_items
 
     from .knowledge import search_terms
@@ -216,54 +226,78 @@ def build_context(
         terms = search_terms(requirement)
         if not terms:
             continue
-        hits = list(
-            knowledge.search(
-                terms,
-                limit=max_search_items,
-                kinds=PREFERRED_KINDS,
-                exclude_passages=own_passages | taken_passages,
-            )
-        )
-        hits += list(
-            knowledge.search(
-                terms,
-                limit=max_search_items,
-                kinds=FALLBACK_KINDS,
-                exclude_passages=own_passages | taken_passages,
-            )
-        )
-        if not hits:
-            continue
-        best = min(hit.score for hit in hits)
-        for hit in hits:
-            if search_slots <= 0 or len(items) >= max_items:
-                break
-            passage = hit.passage
-            if passage.passage_id in taken_passages:
-                continue
-            if passage.external_id and passage.external_id in taken_external:
-                continue
-            # bm25 scores are negative; smaller is better
-            if best < 0 and hit.score > best * score_ratio:
-                continue
-            item = _item_from_hit(hit, requirement, documents or {})
-            if used + item.size > char_budget:
-                selection.issues.append(
-                    _clarification(
-                        "C_CONTEXT_OMITTED",
-                        passage.passage_id,
-                        f"a search hit in {item.document_filename or passage.document_id} "
-                        f"({item.size} characters) does not fit the context budget "
-                        f"of {char_budget}; it was left out whole",
-                    )
+        excluded = own_passages | taken_passages
+        tiers = [
+            list(
+                knowledge.search(
+                    terms,
+                    limit=max_search_items,
+                    kinds=kinds,
+                    exclude_passages=excluded,
                 )
+            )
+            for kinds in SEARCH_TIERS
+        ]
+        # keep one slot and a share of the budget for a related requirement
+        # while one matched: signal and interface sections stay preferred,
+        # they are no longer exclusive
+        reserved = 1 if (search_slots >= 2 and tiers[-1]) else 0
+        reserved_chars = int(char_budget * REQUIREMENT_BUDGET_SHARE) if reserved else 0
+        omitted_hits = 0
+
+        for tier_index, hits in enumerate(tiers):
+            last_tier = tier_index == len(tiers) - 1
+            if not hits:
                 continue
-            items.append(item)
-            taken_passages.add(passage.passage_id)
-            if passage.external_id:
-                taken_external.add(passage.external_id)
-            used += item.size
-            search_slots -= 1
+            allowance = search_slots if last_tier else search_slots - reserved
+            budget = char_budget if last_tier else char_budget - reserved_chars
+            if allowance <= 0:
+                continue
+            # bm25 scores are negative; smaller is better. Each tier is judged
+            # against its own best hit, so a strong requirement hit cannot push
+            # the signal sections out of the selection.
+            best = min(hit.score for hit in hits)
+            for hit in hits:
+                if allowance <= 0 or search_slots <= 0 or len(items) >= max_items:
+                    break
+                passage = hit.passage
+                if passage.passage_id in taken_passages:
+                    continue
+                if passage.external_id and (
+                    passage.external_id in taken_external
+                    or passage.external_id in own_external
+                ):
+                    continue
+                if best < 0 and hit.score > best * score_ratio:
+                    continue
+                item = _item_from_hit(hit, requirement, documents or {})
+                if used + item.size > budget:
+                    omitted_hits += 1
+                    continue
+                items.append(item)
+                taken_passages.add(passage.passage_id)
+                if passage.external_id:
+                    taken_external.add(passage.external_id)
+                used += item.size
+                search_slots -= 1
+                allowance -= 1
+                if last_tier:
+                    reserved = 0
+                    reserved_chars = 0
+
+        if omitted_hits:
+            # one line, not one per hit: these are search results nobody asked
+            # for, and a finding each buried the findings that matter
+            selection.issues.append(
+                _clarification(
+                    "C_CONTEXT_OMITTED",
+                    requirement.external_id or requirement.requirement_id,
+                    f"{omitted_hits} further search hit(s) did not fit the "
+                    f"context budget of {char_budget} characters and were left "
+                    "out whole. Raise generation.context_char_budget to send "
+                    "more supporting context.",
+                )
+            )
 
     selection.items = tuple(items)
     return selection

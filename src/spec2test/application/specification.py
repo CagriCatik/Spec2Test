@@ -172,7 +172,11 @@ def build_specification(
         linked = [
             by_requirement[rid] for rid in case.requirement_ids if rid in by_requirement
         ]
-        report = validate_test_case(case, project.requirements)
+        report = validate_test_case(
+            case,
+            project.requirements,
+            context=context_by_case.get(case.case_id, []),
+        )
         accepted = case.accepted_keys
         findings = [
             issue
