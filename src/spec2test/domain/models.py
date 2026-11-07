@@ -188,6 +188,73 @@ class Measurement:
     evidence: str | None = None
 
 
+class GroundKind(str, Enum):
+    """Where a concrete expectation gets its authority from."""
+
+    #: stated in the requirement the test case is written for
+    TARGET_REQUIREMENT = "target_requirement"
+    #: stated in a passage that was sent as supporting context
+    CONTEXT = "context"
+    #: computed from values that are themselves grounded
+    CALCULATION = "calculation"
+    #: nothing states it. Then it must be an open question, not an expectation
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True)
+class GroundInput:
+    """One value a calculation starts from, with where it comes from."""
+
+    value: str
+    source: str
+    quote: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.value.strip():
+            raise ValueError("a calculation input needs a value")
+        if not self.source.strip():
+            raise ValueError(f"the input {self.value!r} needs a source")
+
+
+@dataclass(frozen=True)
+class Ground:
+    """Why one concrete expectation is allowed to stand.
+
+    The model proposes it; the application checks that the references exist
+    and that a calculation can be followed. Whether the value is technically
+    right for this test remains a tester's judgement - this records what it
+    rests on, not that it is correct.
+
+    ``claim``   the expectation or measured value this is about, verbatim.
+    ``source``  requirement_id, external id or context id, depending on kind.
+    ``quote``   the sentence in that source that carries the value.
+    ``inputs``  only for a calculation: the starting values, each with its
+                own source.
+    ``formula`` only for a calculation: how the inputs combine, readable.
+    """
+
+    claim: str
+    kind: GroundKind
+    source: str | None = None
+    quote: str | None = None
+    inputs: tuple[GroundInput, ...] = ()
+    formula: str | None = None
+    #: set when kind is UNRESOLVED: the question that replaces the claim
+    question: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.claim.strip():
+            raise ValueError("a ground needs the claim it belongs to")
+        if self.kind is GroundKind.CALCULATION and not self.inputs:
+            raise ValueError(
+                f"the calculation for {self.claim!r} has no input values"
+            )
+
+    @property
+    def needs_a_source(self) -> bool:
+        return self.kind in (GroundKind.TARGET_REQUIREMENT, GroundKind.CONTEXT)
+
+
 @dataclass(frozen=True)
 class TestStep:
     """An action together with the observable expectations for that action.
@@ -200,10 +267,16 @@ class TestStep:
     action: str
     expectations: tuple[str, ...] = ()
     measurements: tuple[Measurement, ...] = ()
+    #: one entry per concrete expectation or measured value, proposed by the
+    #: model. Empty means the draft predates the requirement to state it.
+    grounds: tuple[Ground, ...] = ()
 
     def __post_init__(self) -> None:
         if self.order < 1:
             raise ValueError("step order starts at 1")
+
+    def ground_for(self, claim: str) -> "Ground | None":
+        return next((g for g in self.grounds if g.claim == claim), None)
 
 
 @dataclass(frozen=True)

@@ -120,6 +120,35 @@ def to_markdown(spec: TestSpecification) -> str:
                 expected = "<br>".join(expectations) or "-"
                 add(f"| {order} | {kind} | {_cell(action)} | {_cell(expected)} |")
             add("")
+        grounds = [
+            ground
+            for step in (*case.preconditions, *case.steps, *case.postconditions)
+            for ground in step.grounds
+        ]
+        if grounds:
+            add("**Where the values come from**")
+            add("")
+            add("| Value | Basis | Source | Quote or calculation |")
+            add("| - | - | - | - |")
+            for ground in grounds:
+                if ground.kind.value == "calculation":
+                    detail = ground.formula or " x ".join(
+                        i.value for i in ground.inputs
+                    )
+                    source = ", ".join(
+                        dict.fromkeys(i.source for i in ground.inputs)
+                    )
+                elif ground.kind.value == "unresolved":
+                    detail = ground.question or "-"
+                    source = "-"
+                else:
+                    detail = ground.quote or "-"
+                    source = ground.source or "-"
+                add(
+                    f"| {_cell(ground.claim)} | {ground.kind.value} "
+                    f"| {_cell(source)} | {_cell(detail)} |"
+                )
+            add("")
         if case.open_questions:
             add("**Open questions**")
             add("")

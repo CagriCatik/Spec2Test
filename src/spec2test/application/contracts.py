@@ -13,9 +13,15 @@ from typing import Any
 
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    ValidationError,
+    field_validator,
+)
 
-from ..domain.models import Severity, ValidationIssue
+from ..domain.models import GroundKind, Severity, ValidationIssue
 
 SCHEMA_VERSION = "1.0"
 SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0"})
@@ -58,6 +64,45 @@ class MeasurementContract(BaseModel):
     evidence: str | None = None
 
 
+class GroundInputContract(BaseModel):
+    """One starting value of a calculation, with where it comes from."""
+
+    model_config = _STRICT
+
+    value: Scalar
+    source: str
+    quote: str = ""
+
+
+class GroundContract(BaseModel):
+    """Where one concrete expectation or measured value gets its authority.
+
+    ``kind`` must be one of target_requirement, context, calculation,
+    unresolved. Anything else is refused rather than guessed at.
+    """
+
+    model_config = _STRICT
+
+    claim: str
+    kind: str
+    source: str | None = None
+    quote: str | None = None
+    inputs: list[GroundInputContract] = []
+    formula: str | None = None
+    question: str | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _known_kind(cls, value: str) -> str:
+        allowed = {k.value for k in GroundKind}
+        text = str(value).strip().lower()
+        if text not in allowed:
+            raise ValueError(
+                f"kind must be one of {sorted(allowed)}, not {value!r}"
+            )
+        return text
+
+
 class StepContract(BaseModel):
     model_config = _STRICT
 
@@ -65,6 +110,7 @@ class StepContract(BaseModel):
     action: str
     expectations: list[str] = []
     measurements: list[MeasurementContract] = []
+    grounds: list[GroundContract] = []
 
 
 class OpenQuestionContract(BaseModel):

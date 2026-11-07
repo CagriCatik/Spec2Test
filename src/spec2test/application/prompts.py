@@ -8,7 +8,7 @@ from ..domain.models import Requirement, ValidationIssue
 from .contracts import SCHEMA_VERSION
 from .ports import ChatMessage
 
-PROMPT_VERSION = "l1-test-draft-5"
+PROMPT_VERSION = "l1-test-draft-6"
 
 GUIDANCE_HEADER = """\
 === PROJECT GUIDANCE (additional, lower precedence) ===
@@ -51,6 +51,21 @@ Hard rules:
    open question even when supporting context is present - unless that
    context states it literally. Having more text in front of you is not
    permission to fill a gap from your own knowledge.
+11. Say where every concrete value comes from. For each expectation or
+   measured value that carries a number, a threshold, a duration, a bit
+   position or a DTC, add one entry to the step's "grounds" list:
+     kind "target_requirement" - the requirement under test states it.
+       Give "source" (its requirement_ref) and "quote" (the sentence).
+     kind "context" - a supporting context item states it. Give its
+       context_ref as "source" and the sentence as "quote".
+     kind "calculation" - it follows from other values. Give "inputs", one
+       per starting value with its own "source" and "quote", and "formula".
+       The arithmetic is recomputed; state the inputs that actually produce
+       the result.
+     kind "unresolved" - nothing states it. Then do not write it as an
+       expectation at all: put it in "question" and raise an open question.
+   One ground per claim, with "claim" repeating the value verbatim. A value
+   whose source you cannot name is a question, not an expectation.
 
 Structure of each test case:
   title, objective, requirement_refs (list of strings),
@@ -59,7 +74,8 @@ Structure of each test case:
 Step object: order (int, starting at 1), action (string),
   expectations (list of strings), measurements (optional list of
   {{quantity, value, unit, tolerance, evidence}}; "evidence" must quote the
-  requirement the value comes from).
+  requirement the value comes from), grounds (optional list of
+  {{claim, kind, source, quote, inputs, formula, question}}; see rule 11).
 Question object: question (string), requirement_refs (list of strings),
   suggestion (optional string, explicitly a proposal and not a specification).
 """

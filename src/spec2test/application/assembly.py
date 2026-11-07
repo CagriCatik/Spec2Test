@@ -7,6 +7,9 @@ from __future__ import annotations
 from typing import Sequence
 
 from ..domain.models import (
+    Ground,
+    GroundInput,
+    GroundKind,
     Measurement,
     OpenQuestion,
     QuestionOrigin,
@@ -24,6 +27,22 @@ from .contracts import (
     StepContract,
     TestCaseContract,
 )
+
+
+def _ground(contract) -> Ground:
+    """A proposed ground, taken as proposed. Checking happens in validation."""
+    return Ground(
+        claim=contract.claim,
+        kind=GroundKind(contract.kind),
+        source=contract.source,
+        quote=contract.quote,
+        inputs=tuple(
+            GroundInput(value=i.value, source=i.source, quote=i.quote)
+            for i in contract.inputs
+        ),
+        formula=contract.formula,
+        question=contract.question,
+    )
 
 
 def _steps(contracts: Sequence[StepContract]) -> tuple[TestStep, ...]:
@@ -50,6 +69,7 @@ def _steps(contracts: Sequence[StepContract]) -> tuple[TestStep, ...]:
                 )
                 for m in step.measurements
             ),
+            grounds=tuple(_ground(g) for g in step.grounds),
         )
         for position, step in enumerate(ordered, 1)
     )

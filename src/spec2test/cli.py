@@ -119,6 +119,15 @@ def _build_parser() -> argparse.ArgumentParser:
     models.add_argument("--model", default=None, help="check this name against the list")
     models.add_argument("--host", default=None)
     models.add_argument("--config", type=Path, default=None)
+
+    grounds = sub.add_parser(
+        "grounds",
+        help="report where the drafts of a saved project get their values from",
+    )
+    grounds.add_argument("project", type=Path, help="a .s2t.json project file")
+    grounds.add_argument(
+        "--verbose", action="store_true", help="list every draft, not only gaps"
+    )
     return parser
 
 
@@ -396,6 +405,69 @@ def _cmd_run(args) -> int:
     return EXIT_CODES.get(run.status, 1)
 
 
+def _cmd_grounds(args) -> int:
+    """Where does each concrete value in a stored project come from?
+
+    Reads only; nothing is generated and nothing is written. Drafts made
+    before grounds were asked for show up as "no grounds stated", which is
+    a gap in the record, not a defect in the draft.
+    """
+    from .adapters.persistence.project_store import ProjectFileError, ProjectStore
+    from .application.review import context_for_case
+    from .domain.grounding import check_grounds
+    from .domain.models import GroundKind
+
+    try:
+        project = ProjectStore(args.project).load()
+    except (OSError, ValueError, ProjectFileError) as exc:
+        _out(f"{args.project} could not be read: {exc}")
+        return 2
+
+    totals = {kind: 0 for kind in GroundKind}
+    without_any: list[str] = []
+    problems: list[tuple[str, str, str]] = []
+    claims = 0
+
+    for case in project.test_cases:
+        context = context_for_case(project, case.case_id)
+        grounds = [
+            ground
+            for step in (*case.preconditions, *case.steps, *case.postconditions)
+            for ground in step.grounds
+        ]
+        claims += len(grounds)
+        for ground in grounds:
+            totals[ground.kind] += 1
+        if not grounds:
+            without_any.append(case.case_id)
+        for issue in check_grounds(case, project.requirements, context=context):
+            problems.append((case.case_id, issue.code, issue.message))
+        if args.verbose:
+            _out(f"{case.case_id}: {len(grounds)} ground(s), {case.title[:60]}")
+
+    _out(f"project {project.name}: {len(project.test_cases)} draft(s)")
+    _out(f"  grounds stated: {claims}")
+    for kind, count in totals.items():
+        if count:
+            _out(f"    {kind.value:<20} {count}")
+    _out(f"  drafts without any ground: {len(without_any)}")
+    for case_id in without_any[:10]:
+        _out(f"    {case_id}")
+    if len(without_any) > 10:
+        _out(f"    ... and {len(without_any) - 10} more")
+    _out(f"  grounds that do not check out: {len(problems)}")
+    for case_id, code, message in problems[:20]:
+        _out(f"    [{code}] {case_id}: {message[:140]}")
+    if problems:
+        _out(
+            "A ground that names an unknown source, quotes a sentence that is "
+            "not there, or states a calculation that does not work out is an "
+            "error. Whether a correctly quoted value is the right one for "
+            "this test stays a tester's judgement."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     # a .env in the working directory may provide OLLAMA_API_KEY; only the
@@ -406,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args)
     if args.command == "models":
         return _cmd_models(args)
+    if args.command == "grounds":
+        return _cmd_grounds(args)
     return 1  # pragma: no cover - argparse enforces a command
 
 

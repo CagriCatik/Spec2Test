@@ -252,6 +252,25 @@ def _validate_step_sequence(
 
 
 # -------------------------------------------------------------- case rules ---
+
+def _all_steps(case: TestCase):
+    return (*case.preconditions, *case.steps, *case.postconditions)
+
+
+def _wants_grounds(case: TestCase) -> bool:
+    """True when the draft makes a concrete claim that could be sourced."""
+    for step in _all_steps(case):
+        if any(m.value is not None for m in step.measurements):
+            return True
+        if any(_numeric_claims(e) or _dtc_claims(e) for e in step.expectations):
+            return True
+    return False
+
+
+def _has_any_ground(case: TestCase) -> bool:
+    return any(step.grounds for step in _all_steps(case))
+
+
 def validate_test_case(
     case: TestCase,
     requirements: Sequence[Requirement] | Mapping[str, Requirement],
@@ -346,6 +365,24 @@ def validate_test_case(
 
     # --- unsupported detail ------------------------------------------------
     report.extend(_unsupported_details(case, resolved, path, context))
+
+    # --- where each concrete expectation gets its authority from ----------
+    from .grounding import check_grounds
+
+    report.extend(check_grounds(case, resolved or list(lookup.values()), context=context))
+    # Informational, not blocking: every draft written before grounds were
+    # required would otherwise become unapprovable overnight, which helps
+    # nobody. A ground that is *wrong* - unknown source, quote that is not
+    # there, arithmetic that does not work out - is an error and does block.
+    if _wants_grounds(case) and not _has_any_ground(case):
+        report.add(
+            "I_NO_GROUNDS_STATED",
+            Severity.INFO,
+            f"{path}.steps",
+            "this draft states concrete values but says for none of them "
+            "where they come from. A reviewer cannot tell a quoted limit "
+            "from an invented one.",
+        )
 
     if case.legacy_payload:
         report.add(
