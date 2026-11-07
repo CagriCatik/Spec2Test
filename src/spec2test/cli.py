@@ -524,13 +524,17 @@ def _run_ground_agent(args, project) -> int:
             model,
             context=context_for_case(project, case.case_id),
         )
-        if not review.ok:
-            _out(f"  {case.case_id}: {review.error}")
+        if not review.verdicts:
             continue
         reviewed += 1
+        _out(f"  {case.case_id}: {review.summary()}")
+        for verdict in review.verdicts:
+            mark = {"clear": "checked, no finding", "finding": "FINDING",
+                    "not_checked": "NOT CHECKED"}[verdict.outcome]
+            _out(f"    {mark:<20} {verdict.path} {verdict.claim}")
         for issue in review.issues:
             reported += 1
-            _out(f"  [{issue.code}] {issue.path}: {issue.message[:180]}")
+            _out(f"    [{issue.code}] {issue.path}: {issue.message[:170]}")
     _out(f"  {reviewed} draft(s) reviewed, {reported} finding(s)")
     _out(
         "These are a model's opinions, recorded as clarifications. They "

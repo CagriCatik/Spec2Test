@@ -79,12 +79,15 @@ class GroundContract(BaseModel):
 
     ``kind`` must be one of target_requirement, context, calculation,
     unresolved. Anything else is refused rather than guessed at.
+    ``target`` names the field of the step the claim stands in, such as
+    ``expectations[0]``: the value alone is not an address.
     """
 
     model_config = _STRICT
 
     claim: str
     kind: str
+    target: str | None = None
     source: str | None = None
     quote: str | None = None
     inputs: list[GroundInputContract] = []

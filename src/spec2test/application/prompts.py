@@ -8,7 +8,7 @@ from ..domain.models import Requirement, ValidationIssue
 from .contracts import SCHEMA_VERSION
 from .ports import ChatMessage
 
-PROMPT_VERSION = "l1-test-draft-6"
+PROMPT_VERSION = "l1-test-draft-7"
 
 GUIDANCE_HEADER = """\
 === PROJECT GUIDANCE (additional, lower precedence) ===
@@ -64,8 +64,11 @@ Hard rules:
        the result.
      kind "unresolved" - nothing states it. Then do not write it as an
        expectation at all: put it in "question" and raise an open question.
-   One ground per claim, with "claim" repeating the value verbatim. A value
-   whose source you cannot name is a question, not an expectation.
+   One ground per claim, with "claim" repeating the value verbatim and
+   "target" naming the field it stands in: "expectations[0]",
+   "measurements[1]". The value alone is not an address - a step may state a
+   turn-on and a turn-off threshold with the same number. A value whose
+   source you cannot name is a question, not an expectation.
 
 Structure of each test case:
   title, objective, requirement_refs (list of strings),
@@ -75,7 +78,8 @@ Step object: order (int, starting at 1), action (string),
   expectations (list of strings), measurements (optional list of
   {{quantity, value, unit, tolerance, evidence}}; "evidence" must quote the
   requirement the value comes from), grounds (optional list of
-  {{claim, kind, source, quote, inputs, formula, question}}; see rule 11).
+  {{claim, target, kind, source, quote, inputs, formula, question}}; see
+  rule 11).
 Question object: question (string), requirement_refs (list of strings),
   suggestion (optional string, explicitly a proposal and not a specification).
 """

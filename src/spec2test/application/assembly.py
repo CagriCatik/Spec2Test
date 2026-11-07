@@ -35,6 +35,7 @@ def _ground(contract) -> Ground:
     return Ground(
         claim=contract.claim,
         kind=GroundKind(contract.kind),
+        target=contract.target,
         source=contract.source,
         quote=contract.quote,
         inputs=tuple(

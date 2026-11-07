@@ -192,7 +192,8 @@ def test_a_fitting_ground_produces_no_finding():
     )
     review = review_grounds(case_with(CORRECT), [requirement()], model)
     assert review.issues == []
-    assert review.checked_claims == 1, "it looked, and said so"
+    assert review.complete, "it looked at everything it was given"
+    assert [v.outcome for v in review.verdicts] == ["clear"]
 
 
 def test_every_verdict_maps_to_its_own_code():
@@ -254,7 +255,10 @@ def test_a_finding_about_a_claim_that_is_not_there_is_flagged():
                  "explanation": "invented"})]
     )
     review = review_grounds(case_with(CORRECT), [requirement()], model)
-    assert [i.code for i in review.issues] == ["C_GROUND_REVIEW_UNMATCHED"]
+    assert "C_GROUND_REVIEW_UNMATCHED" in {i.code for i in review.issues}
+    # ... and the real claim is reported as unjudged, not quietly passed
+    assert [v.outcome for v in review.verdicts] == ["not_checked"]
+    assert "C_GROUND_REVIEW_NOT_CHECKED" in {i.code for i in review.issues}
 
 
 def test_a_wrong_schema_version_is_refused():
@@ -327,3 +331,141 @@ def test_the_cli_runs_the_agent_over_a_stored_project(tmp_path, capsys):
     assert "draft(s) reviewed" in out
     assert "approve nothing and change nothing" in out
     assert target.read_bytes() == before, "the agent must not touch the project"
+
+
+# ============================ "clear" must never be confused with "not asked"
+def test_a_claim_the_agent_skipped_is_reported_as_unjudged():
+    """A valid answer can still leave claims out. That is not a pass."""
+    step = TestStep(
+        1,
+        "drive the vehicle",
+        ("the cell voltage stays below 4.15 V", "the pack current stays below 2550 A"),
+        grounds=(
+            Ground(
+                claim="4.15 V", kind=GroundKind.TARGET_REQUIREMENT,
+                target="expectations[0]", source="SYS-REQ-0001",
+                quote="During driving the cell voltage shall not exceed 4.15 V.",
+            ),
+            Ground(
+                claim="2550 A", kind=GroundKind.TARGET_REQUIREMENT,
+                target="expectations[1]", source="SYS-REQ-0001",
+                quote="the trip current is 2550 A",
+            ),
+        ),
+    )
+    model = ScriptedModel(
+        [answer({"claim": "4.15 V", "verdict": "fits", "explanation": "ok"})]
+    )
+    review = review_grounds(case_with(step), [requirement()], model)
+
+    assert review.ok, "the answer itself was valid"
+    assert review.complete is False
+    outcomes = {v.claim: v.outcome for v in review.verdicts}
+    assert outcomes == {"4.15 V": "clear", "2550 A": "not_checked"}
+    assert "C_GROUND_REVIEW_NOT_CHECKED" in {i.code for i in review.issues}
+    assert "2550 A" in review.summary() or "1 not checked" in review.summary()
+
+
+def test_a_model_failure_leaves_every_claim_unjudged():
+    from spec2test.application.ports import ModelError
+
+    class Broken:
+        descriptor = ScriptedModel([]).descriptor
+
+        def chat(self, *_a, **_k):
+            raise ModelError("no route to host")
+
+    review = review_grounds(case_with(CORRECT), [requirement()], Broken())
+    assert not review.ok
+    assert [v.outcome for v in review.verdicts] == ["not_checked"]
+    assert review.complete is False
+    assert review.checked == []
+
+
+def test_an_unreadable_answer_leaves_every_claim_unjudged():
+    review = review_grounds(case_with(CORRECT), [requirement()], ScriptedModel(["no"]))
+    assert [v.outcome for v in review.verdicts] == ["not_checked"]
+    assert review.complete is False
+
+
+def test_a_finding_is_addressed_to_the_field_not_only_the_step():
+    model = ScriptedModel(
+        [answer({"claim": "4.20 V", "verdict": "mismatched_state",
+                 "explanation": "charging limit"})]
+    )
+    step = TestStep(
+        1, "drive", ("the cell voltage stays below 4.20 V",),
+        grounds=(
+            Ground(
+                claim="4.20 V", kind=GroundKind.TARGET_REQUIREMENT,
+                target="expectations[0]", source="SYS-REQ-0001",
+                quote="While the pack is charging, the cell voltage shall not exceed 4.20 V.",
+            ),
+        ),
+    )
+    review = review_grounds(case_with(step), [requirement()], model)
+    assert review.issues[0].path == "TC-1.steps[0].expectations[0]"
+
+
+# ================== the same number in two fields needs two separate grounds
+def test_a_turn_on_and_a_turn_off_threshold_with_the_same_number():
+    """The hole the reviewer named: one ground passing for both."""
+    from spec2test.domain.grounding import check_grounds
+
+    step = TestStep(
+        1,
+        "sweep the voltage",
+        (
+            "the heater switches on at 5.0 V",
+            "the heater switches off at 5.0 V",
+        ),
+        grounds=(
+            Ground(
+                claim="5.0 V", kind=GroundKind.TARGET_REQUIREMENT,
+                target="expectations[0]", source="SYS-REQ-0001",
+                quote="The 12 V auxiliary supply powers the monitoring board.",
+            ),
+        ),
+    )
+    case = case_with(step)
+    paths = {
+        i.path for i in check_grounds(case, [requirement()])
+        if i.code == "C_CLAIM_WITHOUT_GROUND"
+    }
+    assert paths == {"TC-1.steps[0].expectations[1]"}, paths
+
+
+def test_a_ground_without_a_target_is_reported_as_ambiguous():
+    from spec2test.domain.grounding import check_grounds
+
+    step = TestStep(
+        1,
+        "sweep the voltage",
+        ("the heater switches on at 5.0 V", "the heater switches off at 5.0 V"),
+        grounds=(
+            Ground(
+                claim="5.0 V", kind=GroundKind.TARGET_REQUIREMENT,
+                source="SYS-REQ-0001",
+                quote="The 12 V auxiliary supply powers the monitoring board.",
+            ),
+        ),
+    )
+    codes_found = {i.code for i in check_grounds(case_with(step), [requirement()])}
+    assert "C_GROUND_AMBIGUOUS_TARGET" in codes_found
+
+
+def test_an_unambiguous_loose_ground_still_counts():
+    """Only a repeated value is ambiguous; a single one needs no target."""
+    from spec2test.domain.grounding import check_grounds
+
+    step = TestStep(
+        1, "drive", ("the cell voltage stays below 4.15 V",),
+        grounds=(
+            Ground(
+                claim="4.15 V", kind=GroundKind.TARGET_REQUIREMENT,
+                source="SYS-REQ-0001",
+                quote="During driving the cell voltage shall not exceed 4.15 V.",
+            ),
+        ),
+    )
+    assert check_grounds(case_with(step), [requirement()]) == []

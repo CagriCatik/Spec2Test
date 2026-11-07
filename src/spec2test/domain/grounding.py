@@ -194,13 +194,14 @@ def claims_of(step: TestStep) -> list[tuple[str, str]]:
             _numeric_claims(f"{measurement.value} {measurement.unit or ''}")
         ):
             found.append((_format_claim(value, unit), f"measurements[{index}]"))
-    # the same value twice in one step is one claim
-    seen: set[str] = set()
+    # the same value in the same field is one claim; the same value in two
+    # different fields is two claims, and each needs its own ground
+    seen: set[tuple[str, str]] = set()
     unique = []
     for claim, where in found:
-        if claim in seen:
+        if (claim, where) in seen:
             continue
-        seen.add(claim)
+        seen.add((claim, where))
         unique.append((claim, where))
     return unique
 
@@ -247,7 +248,14 @@ def _ground_covers(ground: Ground, claim: str) -> bool:
 def missing_grounds(
     case: TestCase, *, severity: Severity
 ) -> list[ValidationIssue]:
-    """Concrete values that no ground of their own step speaks about."""
+    """Concrete values that no ground of their own step speaks about.
+
+    A ground addresses a field (``expectations[0]``). Matching by value
+    alone is kept for grounds that name no target, but then an ambiguity is
+    reported rather than silently resolved: a step may state a turn-on and a
+    turn-off threshold with the same number, and one ground must not pass
+    for both.
+    """
     issues: list[ValidationIssue] = []
     for label, steps in (
         ("preconditions", case.preconditions),
@@ -255,8 +263,38 @@ def missing_grounds(
         ("postconditions", case.postconditions),
     ):
         for index, step in enumerate(steps):
-            for claim, origin in claims_of(step):
-                if any(_ground_covers(g, claim) for g in step.grounds):
+            claims = claims_of(step)
+            by_value: dict[str, list[str]] = {}
+            for claim, origin in claims:
+                by_value.setdefault(claim, []).append(origin)
+            for claim, origin in claims:
+                targeted = [
+                    g
+                    for g in step.grounds
+                    if g.target == origin and _ground_covers(g, claim)
+                ]
+                if targeted:
+                    continue
+                loose = [
+                    g
+                    for g in step.grounds
+                    if not g.target and _ground_covers(g, claim)
+                ]
+                if loose:
+                    if len(by_value[claim]) > 1:
+                        issues.append(
+                            ValidationIssue(
+                                "C_GROUND_AMBIGUOUS_TARGET",
+                                Severity.CLARIFICATION,
+                                f"{case.case_id}.{label}[{index}].{origin}",
+                                f"{claim!r} appears in "
+                                f"{len(by_value[claim])} places of this step "
+                                f"({', '.join(by_value[claim])}) and the "
+                                "ground names no target. Say which field it "
+                                "belongs to - the same number can be a "
+                                "turn-on and a turn-off threshold.",
+                            )
+                        )
                     continue
                 issues.append(
                     ValidationIssue(

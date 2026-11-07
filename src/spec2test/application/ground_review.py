@@ -137,6 +137,23 @@ class _ReviewContract(BaseModel):
         return value
 
 
+@dataclass(frozen=True)
+class ClaimVerdict:
+    """What happened to one claim. ``not_checked`` is a result too."""
+
+    claim: str
+    path: str
+    #: "clear" (looked, nothing found), "finding", "not_checked"
+    outcome: str
+    verdict: str | None = None
+    confidence: str | None = None
+    explanation: str = ""
+
+    @property
+    def was_checked(self) -> bool:
+        return self.outcome in ("clear", "finding")
+
+
 @dataclass
 class GroundReview:
     """What the agent said about one test case. Never a decision."""
@@ -145,7 +162,8 @@ class GroundReview:
     model: str
     prompt_version: str = REVIEW_PROMPT_VERSION
     issues: list[ValidationIssue] = field(default_factory=list)
-    checked_claims: int = 0
+    #: one entry per ground that was sent, so a silent omission is visible
+    verdicts: list[ClaimVerdict] = field(default_factory=list)
     #: verbatim, so a disputed finding can be traced to what was actually said
     raw: str = ""
     error: str | None = None
@@ -153,6 +171,26 @@ class GroundReview:
     @property
     def ok(self) -> bool:
         return self.error is None
+
+    @property
+    def checked(self) -> list[ClaimVerdict]:
+        return [v for v in self.verdicts if v.was_checked]
+
+    @property
+    def not_checked(self) -> list[ClaimVerdict]:
+        return [v for v in self.verdicts if not v.was_checked]
+
+    @property
+    def complete(self) -> bool:
+        """True only when every claim that was sent came back judged."""
+        return self.ok and bool(self.verdicts) and not self.not_checked
+
+    def summary(self) -> str:
+        return (
+            f"{len(self.checked)} of {len(self.verdicts)} claim(s) judged, "
+            f"{len(self.issues)} finding(s), "
+            f"{len(self.not_checked)} not checked"
+        )
 
 
 def _grounds_of(case: TestCase) -> list[tuple[str, Ground]]:
@@ -230,12 +268,25 @@ def review_grounds(
     if not pairs:
         return review
 
+    def unchecked(why: str) -> GroundReview:
+        """A failure leaves every claim unchecked. It is never a pass."""
+        review.verdicts = [
+            ClaimVerdict(
+                claim=ground.claim,
+                path=_address(path, ground),
+                outcome="not_checked",
+                explanation=why,
+            )
+            for path, ground in pairs
+        ]
+        return review
+
     messages = build_review_messages(case, requirements, context=context)
     try:
         reply = model.chat(messages)
     except ModelError as exc:
         review.error = f"{type(exc).__name__}: {exc}"
-        return review
+        return unchecked(review.error)
     review.raw = reply.text
 
     try:
@@ -243,38 +294,87 @@ def review_grounds(
         parsed = _ReviewContract.model_validate(payload)
     except (json.JSONDecodeError, ValidationError, TypeError) as exc:
         review.error = f"the agent's answer could not be read: {exc}"
-        return review
+        return unchecked(review.error)
 
-    by_claim = {
-        ground.claim.strip().lower(): path for path, ground in pairs
-    }
-    review.checked_claims = len(parsed.findings)
+    answered: dict[str, _FindingContract] = {}
     for finding in parsed.findings:
-        if finding.verdict == "fits":
+        key = finding.claim.strip().lower()
+        if key in {g.claim.strip().lower() for _p, g in pairs}:
+            answered.setdefault(key, finding)
             continue
-        path = by_claim.get(finding.claim.strip().lower())
-        if path is None:
-            review.issues.append(
-                ValidationIssue(
-                    "C_GROUND_REVIEW_UNMATCHED",
-                    Severity.CLARIFICATION,
-                    case.case_id,
-                    f"the review agent reported on {finding.claim!r}, which is "
-                    "not a claim of this draft. Read the finding before acting "
-                    f"on it: {finding.explanation[:200]}",
+        review.issues.append(
+            ValidationIssue(
+                "C_GROUND_REVIEW_UNMATCHED",
+                Severity.CLARIFICATION,
+                case.case_id,
+                f"the review agent reported on {finding.claim!r}, which is "
+                "not a claim of this draft. Read the finding before acting "
+                f"on it: {finding.explanation[:200]}",
+            )
+        )
+
+    for path, ground in pairs:
+        address = _address(path, ground)
+        finding = answered.get(ground.claim.strip().lower())
+        if finding is None:
+            review.verdicts.append(
+                ClaimVerdict(
+                    claim=ground.claim,
+                    path=address,
+                    outcome="not_checked",
+                    explanation="the agent's answer did not mention this claim",
                 )
             )
             continue
+        if finding.verdict == "fits":
+            review.verdicts.append(
+                ClaimVerdict(
+                    claim=ground.claim,
+                    path=address,
+                    outcome="clear",
+                    verdict="fits",
+                    confidence=finding.confidence,
+                    explanation=finding.explanation,
+                )
+            )
+            continue
+        review.verdicts.append(
+            ClaimVerdict(
+                claim=ground.claim,
+                path=address,
+                outcome="finding",
+                verdict=finding.verdict,
+                confidence=finding.confidence,
+                explanation=finding.explanation,
+            )
+        )
         review.issues.append(
             ValidationIssue(
                 _CODE_FOR[finding.verdict],
                 Severity.CLARIFICATION,
-                path,
+                address,
                 f"[{finding.confidence} confidence, model {review.model}] "
                 f"{finding.claim}: {finding.explanation}",
             )
         )
+
+    for missed in review.not_checked:
+        review.issues.append(
+            ValidationIssue(
+                "C_GROUND_REVIEW_NOT_CHECKED",
+                Severity.CLARIFICATION,
+                missed.path,
+                f"{missed.claim!r} was sent to the review agent and came back "
+                f"unjudged ({missed.explanation}). This is not a pass: nobody "
+                "has looked at whether this ground fits.",
+            )
+        )
     return review
+
+
+def _address(path: str, ground: Ground) -> str:
+    """The step, narrowed to the field the ground names, when it names one."""
+    return f"{path}.{ground.target}" if ground.target else path
 
 
 __all__ = [

@@ -112,19 +112,21 @@ class RuleBasedFakeModel:
                 return line.strip()
         return None
 
-    def _ground_for(self, body: str, ref: str, claim: str) -> dict:
+    def _ground_for(self, body: str, ref: str, claim: str, target: str) -> dict:
         """A sourced ground when the value can be quoted, a question if not."""
         quote = self._quote_for(body, claim)
         if ref and quote:
             return {
                 "claim": claim,
                 "kind": "target_requirement",
+                "target": target,
                 "source": ref,
                 "quote": quote,
             }
         return {
             "claim": claim,
             "kind": "unresolved",
+            "target": target,
             "question": f"Which source states {claim}?",
         }
 
@@ -146,6 +148,7 @@ class RuleBasedFakeModel:
         grounds: list[dict] = []
         first_ref = refs[0] if refs else ""
         for value, unit in values[:3]:
+            index = len(expectations)
             expectations.append(f"The observed value matches {value} {unit}")
             measurements.append(
                 {
@@ -155,10 +158,18 @@ class RuleBasedFakeModel:
                     "evidence": f"{value} {unit}",
                 }
             )
-            grounds.append(self._ground_for(body, first_ref, f"{value} {unit}"))
+            # the value stands in two fields of this step, so it needs a
+            # ground in each: one ground does not cover the other field
+            for target in (f"expectations[{index}]", f"measurements[{index}]"):
+                grounds.append(
+                    self._ground_for(body, first_ref, f"{value} {unit}", target)
+                )
         for dtc in dtcs[:1]:
+            index = len(expectations)
             expectations.append(f"Diagnostic trouble code {dtc} is stored")
-            grounds.append(self._ground_for(body, first_ref, dtc))
+            grounds.append(
+                self._ground_for(body, first_ref, dtc, f"expectations[{index}]")
+            )
         for signal in signals[:1]:
             expectations.append(f"Signal {signal} reports the state")
 

@@ -232,7 +232,12 @@ class Ground:
     right for this test remains a tester's judgement - this records what it
     rests on, not that it is correct.
 
-    ``claim``   the expectation or measured value this is about, verbatim.
+    ``claim``   the value this is about, verbatim.
+    ``target``  which field of the step it belongs to: ``expectations[0]``,
+                ``measurements[1]``. The value alone is not an address - a
+                step may name a turn-on and a turn-off threshold with the
+                same number, and a ground for one of them must not pass as
+                a ground for the other.
     ``source``  requirement_id, external id or context id, depending on kind.
     ``quote``   the sentence in that source that carries the value.
     ``inputs``  only for a calculation: the starting values, each with its
@@ -242,6 +247,8 @@ class Ground:
 
     claim: str
     kind: GroundKind
+    #: the field of the step this ground addresses, e.g. ``expectations[0]``
+    target: str | None = None
     source: str | None = None
     quote: str | None = None
     inputs: tuple[GroundInput, ...] = ()
