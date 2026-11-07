@@ -45,11 +45,15 @@ SEARCH_TIERS = (PREFERRED_KINDS, FALLBACK_KINDS, REQUIREMENT_KINDS)
 #: matched. A reserved slot alone does nothing: signal sections run to ~2300
 #: characters each and two of them exhaust the whole budget.
 REQUIREMENT_BUDGET_SHARE = 0.35
-#: share held back for hits the tester's own task description found. Measured
-#: on 40 runs: without a reservation the task search contributed nothing in
-#: 22 of them, because the requirement search had already spent 5569 of 6000
-#: characters. Whatever the task search does not use falls to the others.
-TASK_BUDGET_SHARE = 0.25
+#: Share held back for hits the tester's own task description found.
+#:
+#: **Off by default.** It does what it was built for - the task text reaches
+#: the prompt in 12 of 16 holdout questions instead of 5 - but 16 generation
+#: runs showed no benefit to the drafts that can be told apart from the
+#: model's own variance, and at a 6000 character budget the reserved 1500
+#: characters rarely hold a whole passage anyway. An unproven default is not
+#: worth keeping; ``generation.task_budget_share`` turns it on.
+TASK_BUDGET_SHARE = 0.0
 
 
 @dataclass
@@ -214,6 +218,7 @@ def build_context(
     score_ratio: float = DEFAULT_SCORE_RATIO,
     task_description: str | None = None,
     max_task_items: int = 2,
+    task_budget_share: float | None = None,
 ) -> ContextSelection:
     """Explicit references first, then full-text hits, within one budget.
 
@@ -304,9 +309,8 @@ def build_context(
     items = list(selection.items)
     used = sum(item.size for item in items)
     has_task = any(is_task for _item, is_task in unique)
-    ledger.reserved_for_task = (
-        int(char_budget * TASK_BUDGET_SHARE) if has_task else 0
-    )
+    share = TASK_BUDGET_SHARE if task_budget_share is None else task_budget_share
+    ledger.reserved_for_task = int(char_budget * share) if has_task else 0
     slots = max_search_items + (max_task_items if has_task else 0)
     omitted = 0
 

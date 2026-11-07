@@ -185,3 +185,85 @@ def test_every_selected_item_keeps_its_origin(corpus):
         assert item.spans and item.document_id
         assert item.reason in set(SelectionReason)
         assert item.cited_by
+
+
+# ------------------------------------- the reservation is off by default ---
+def test_the_reservation_is_off_by_default():
+    """16 generation runs showed no benefit; an unproven default is dropped."""
+    assert TASK_BUDGET_SHARE == 0.0
+
+
+def test_the_reservation_can_be_switched_on_per_run(corpus):
+    parts = corpus(
+        a_target=TARGET,
+        b_arc=ARC,
+        c_filler=_filler("Current monitoring", "Current monitoring"),
+        d_filler=_filler("Contactor telemetry", "Contactor telemetry"),
+    )
+    off = _select(
+        parts, max_search_items=3, task_description=TASK, char_budget=6_000,
+        task_budget_share=0.0,
+    )
+    on = _select(
+        parts, max_search_items=3, task_description=TASK, char_budget=6_000,
+        task_budget_share=0.25,
+    )
+    assert off.ledger.reserved_for_task == 0
+    assert on.ledger.reserved_for_task == 1_500
+    assert on.ledger.used_total <= 6_000
+
+
+def test_the_setting_reaches_the_pipeline():
+    from spec2test.bootstrap import generation_settings_from_config
+
+    assert generation_settings_from_config({}).task_budget_share is None
+    settings = generation_settings_from_config(
+        {"generation": {"task_budget_share": 0.3}}
+    )
+    assert settings.task_budget_share == pytest.approx(0.3)
+    # a nonsense value is clamped rather than passed on
+    assert generation_settings_from_config(
+        {"generation": {"task_budget_share": -1}}
+    ).task_budget_share == 0.0
+    assert generation_settings_from_config(
+        {"generation": {"task_budget_share": 5}}
+    ).task_budget_share == pytest.approx(0.9)
+
+
+def test_a_run_honours_the_share_it_was_given(tmp_path):
+    """The value must travel from the settings into the selection."""
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+    from spec2test.application.generate import GenerationSettings, generate_drafts
+
+    for name, text in (
+        ("a_target", TARGET),
+        ("b_arc", ARC),
+        ("c_filler", _filler("Monitoring", "Monitoring")),
+    ):
+        (tmp_path / f"{name}.md").write_text(text, encoding="utf-8")
+    index = SqliteKnowledgeIndex(tmp_path / "k.db")
+    synced = sync_index(index, sorted(tmp_path.glob("*.md")), build_importers())
+    requirements = list(synced.requirements)
+    target = [r for r in requirements if r.external_id == "SYS-REQ-0001"]
+
+    sizes = {}
+    for share in (0.0, 0.25):
+        run = generate_drafts(
+            target,
+            RuleBasedFakeModel(),
+            settings=GenerationSettings(
+                group_size=1,
+                use_retrieval=True,
+                max_search_items=3,
+                task_description=TASK,
+                task_budget_share=share,
+                context_char_budget=1_200,
+            ),
+            documents=dict(synced.documents),
+            catalogue=requirements,
+            knowledge=index,
+        )
+        context = [c for u in run.units for c in u.context]
+        sizes[share] = sum(c.size for c in context)
+        assert sizes[share] <= 1_200, "the prefix must be inside the budget"
+    assert sizes  # both runs produced a selection

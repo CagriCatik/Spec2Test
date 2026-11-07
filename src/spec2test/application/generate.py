@@ -58,6 +58,11 @@ class GenerationSettings:
     task_description: str | None = None
     #: how many context items the task description alone may bring in
     max_task_items: int = 2
+    #: Share of the context budget held back for hits the task text found.
+    #: ``None`` uses the module default, which is 0.0: the reservation is
+    #: experimental and showed no measurable benefit to the drafts. See
+    #: docs/benchmarks/task-reservation.md.
+    task_budget_share: float | None = None
     #: send the requirements a unit cites as supporting context
     use_reference_context: bool = True
     context_char_budget: int = DEFAULT_CONTEXT_CHAR_BUDGET
@@ -361,6 +366,7 @@ def _process_unit(
             max_search_items=settings.max_search_items,
             task_description=settings.task_description,
             max_task_items=settings.max_task_items,
+            task_budget_share=settings.task_budget_share,
         )
         # stored verbatim: the run stays explainable after the documents change
         result.context = selection.items
