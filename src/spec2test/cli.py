@@ -128,6 +128,19 @@ def _build_parser() -> argparse.ArgumentParser:
     grounds.add_argument(
         "--verbose", action="store_true", help="list every draft, not only gaps"
     )
+    grounds.add_argument(
+        "--agent",
+        action="store_true",
+        help="additionally ask a model whether each ground fits its claim. "
+        "It reports only: no approval, no change to the project.",
+    )
+    grounds.add_argument("--mode", default=None, help="with --agent")
+    grounds.add_argument("--model", default=None, help="with --agent")
+    grounds.add_argument("--host", default=None, help="with --agent")
+    grounds.add_argument("--config", type=Path, default=None)
+    grounds.add_argument(
+        "--max-cases", type=int, default=5, help="with --agent (default 5)"
+    )
     return parser
 
 
@@ -461,10 +474,68 @@ def _cmd_grounds(args) -> int:
     if problems:
         _out(
             "A ground that names an unknown source, quotes a sentence that is "
-            "not there, or states a calculation that does not work out is an "
-            "error. Whether a correctly quoted value is the right one for "
+            "not there, or states a calculation that does not work out blocks "
+            "approval. Whether a correctly quoted value is the right one for "
             "this test stays a tester's judgement."
         )
+
+    if getattr(args, "agent", False):
+        return _run_ground_agent(args, project)
+    return 0
+
+
+def _run_ground_agent(args, project) -> int:
+    """The second pass: does each ground fit the claim it is given for?
+
+    Reports only. The project file is not touched, nothing is approved, and
+    every finding is marked with the model that produced it.
+    """
+    from .application.ground_review import review_grounds
+    from .application.review import context_for_case
+    from .bootstrap import MODE_FAKE, build_model, load_config, ollama_settings_from_config
+
+    config = load_config(args.config) if args.config else {}
+    mode = args.mode or (config.get("cloud") or {}).get("mode") or MODE_LOCAL
+    model_name = args.model or (config.get("model") or {}).get("name")
+    if mode != MODE_FAKE and not model_name:
+        _out("--agent needs --model (or model.name in the configuration)")
+        return 2
+
+    try:
+        if args.host:
+            config = {**config, "cloud": {**(config.get("cloud") or {}), "host": args.host}}
+        settings = (
+            None
+            if mode == MODE_FAKE
+            else ollama_settings_from_config(config, mode=mode, model=model_name)
+        )
+        model = build_model(mode, settings=settings)
+    except Exception as exc:  # noqa: BLE001 - the message is what matters
+        _out(f"the review model could not be built: {type(exc).__name__}: {exc}")
+        return 2
+
+    _out("")
+    _out(f"review agent: {model_name} over at most {args.max_cases} draft(s)")
+    reviewed = reported = 0
+    for case in project.test_cases[: max(0, args.max_cases)]:
+        review = review_grounds(
+            case,
+            project.requirements,
+            model,
+            context=context_for_case(project, case.case_id),
+        )
+        if not review.ok:
+            _out(f"  {case.case_id}: {review.error}")
+            continue
+        reviewed += 1
+        for issue in review.issues:
+            reported += 1
+            _out(f"  [{issue.code}] {issue.path}: {issue.message[:180]}")
+    _out(f"  {reviewed} draft(s) reviewed, {reported} finding(s)")
+    _out(
+        "These are a model's opinions, recorded as clarifications. They "
+        "approve nothing and change nothing in the project."
+    )
     return 0
 
 
