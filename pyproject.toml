@@ -28,6 +28,8 @@ rag = ["scikit-learn>=1.4"]
 embeddings = ["llama-index-core>=0.14", "llama-index-embeddings-ollama>=0.8"]
 # read-only MCP access to the search and the evidence checks
 mcp = ["fastmcp>=2.0"]
+# the researching reviewer: a smolagents agent over the MCP server above
+agents = ["smolagents>=1.20", "mcp>=1.0"]
 dev = ["pytest>=8.2"]
 
 [project.scripts]

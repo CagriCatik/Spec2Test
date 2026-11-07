@@ -141,6 +141,30 @@ def _build_parser() -> argparse.ArgumentParser:
     grounds.add_argument(
         "--max-cases", type=int, default=5, help="with --agent (default 5)"
     )
+
+    research = sub.add_parser(
+        "research-review",
+        help="a reviewer that may look sources up, over the project's own "
+        "MCP server. Writes a separate review snapshot; changes nothing.",
+    )
+    research.add_argument("project", type=Path)
+    research.add_argument("case_id")
+    research.add_argument("--corpus", type=Path, required=True)
+    research.add_argument("--index", type=Path, default=None)
+    research.add_argument(
+        "--model", required=True, help="the model id as the endpoint knows it"
+    )
+    research.add_argument(
+        "--api-base", default="http://localhost:11434/v1",
+        help="OpenAI-compatible endpoint (default: the local Ollama)",
+    )
+    research.add_argument("--max-model-calls", type=int, default=6)
+    research.add_argument("--max-tool-calls", type=int, default=8)
+    research.add_argument("--max-seconds", type=float, default=120.0)
+    research.add_argument(
+        "--out", type=Path, default=None,
+        help="where the snapshot goes (default: beside the project)",
+    )
     return parser
 
 
@@ -546,6 +570,91 @@ def _run_ground_agent(args, project) -> int:
     return 0
 
 
+def _cmd_research_review(args) -> int:
+    """A reviewer that looks things up. Writes a snapshot, nothing else."""
+    from .adapters.agents.mcp_bridge import BridgeError, McpToolBridge
+    from .adapters.agents.research_reviewer import (
+        ALLOWED_TOOLS,
+        build_model,
+        review_with_research,
+        server_parameters,
+    )
+    from .adapters.persistence.project_store import ProjectFileError, ProjectStore
+    from .application.research_review import Budget
+    from .application.review import context_for_case
+
+    try:
+        project = ProjectStore(args.project).load()
+    except (OSError, ValueError, ProjectFileError) as exc:
+        _out(f"{args.project} could not be read: {exc}")
+        return 2
+    case = project.case(args.case_id)
+    if case is None:
+        _out(f"{args.case_id!r} is not a draft of this project")
+        return 2
+    by_id = {r.requirement_id: r for r in project.requirements}
+    by_external = {r.external_id: r for r in project.requirements if r.external_id}
+    requirement = next(
+        (by_id.get(rid) or by_external.get(rid) for rid in case.requirement_ids
+         if by_id.get(rid) or by_external.get(rid)),
+        None,
+    )
+    if requirement is None:
+        _out(f"the target requirement of {args.case_id} is not in the project")
+        return 2
+
+    budget = Budget(
+        max_model_calls=args.max_model_calls,
+        max_tool_calls=args.max_tool_calls,
+        max_seconds=args.max_seconds,
+    )
+    parameters = server_parameters(corpus=args.corpus, index=args.index)
+    _out(f"starting the MCP server over {args.corpus}")
+    try:
+        with McpToolBridge(parameters) as bridge:
+            offered = bridge.tools(only=ALLOWED_TOOLS)
+            _out(
+                f"tools offered to the reviewer: "
+                f"{', '.join(t.name for t in offered)} "
+                f"(withheld: "
+                f"{', '.join(sorted(set(bridge.available) - set(ALLOWED_TOOLS)))})"
+            )
+            report = review_with_research(
+                case,
+                requirement,
+                model=build_model(args.model, api_base=args.api_base),
+                tools=offered,
+                context=context_for_case(project, args.case_id),
+                budget=budget,
+            )
+    except BridgeError as exc:
+        _out(str(exc))
+        return 2
+
+    _out(report.summary())
+    for verdict in report.verdicts:
+        mark = {"clear": "checked, no finding", "finding": "FINDING",
+                "not_checked": "NOT CHECKED"}[verdict.outcome]
+        _out(f"  {mark:<20} [{verdict.claim_id}] {verdict.path} {verdict.claim}")
+        if verdict.explanation:
+            _out(f"      {verdict.explanation[:160]}")
+    for source in report.consulted:
+        _out(
+            f"  read {source.identifier} "
+            f"({source.document_filename or '-'}"
+            f"{', v' + source.document_version if source.document_version else ''}"
+            f", chars {source.char_start}-{source.char_end})"
+        )
+
+    target = args.out or args.project.with_name(
+        f"{args.project.stem}.{args.case_id}.review.json"
+    )
+    report.save(target)
+    _out(f"review snapshot written to {target}")
+    _out(report.provenance_note)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     # a .env in the working directory may provide OLLAMA_API_KEY; only the
@@ -558,6 +667,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_models(args)
     if args.command == "grounds":
         return _cmd_grounds(args)
+    if args.command == "research-review":
+        return _cmd_research_review(args)
     return 1  # pragma: no cover - argparse enforces a command
 
 
