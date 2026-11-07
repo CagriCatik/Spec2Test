@@ -39,8 +39,8 @@ from ..application.review import (
     resolve_question,
     revisions_of,
 )
-from ..application.step_text import StepTextError, steps_to_text, text_to_steps
 from ..domain.models import Project, ReviewStatus, TestCase
+from .step_editor import StepEditor
 
 STATUS_TEXT = {
     ReviewStatus.DRAFT: "Draft",
@@ -99,6 +99,7 @@ class EditCaseDialog(QDialog):
         note.setWordWrap(True)
         layout.addWidget(note)
 
+        self._case = case
         form = QFormLayout()
         self.title = QLineEdit(case.title)
         self.objective = QLineEdit(case.objective)
@@ -108,19 +109,21 @@ class EditCaseDialog(QDialog):
         form.addRow("Requirement IDs", self.requirements)
         layout.addLayout(form)
 
+        # structured editors: nothing is parsed back out of prose, and the
+        # fields the editor does not show (grounds) ride along untouched
+        self.editors: dict[str, StepEditor] = {}
         for label, attribute, source in (
-            ("Preconditions", "preconditions_text", case.preconditions),
-            ("Steps", "steps_text", case.steps),
-            ("Postconditions", "postconditions_text", case.postconditions),
+            ("Preconditions", "preconditions", case.preconditions),
+            ("Steps", "steps", case.steps),
+            ("Postconditions", "postconditions", case.postconditions),
         ):
             group = QGroupBox(label)
             box = QVBoxLayout(group)
-            editor = QPlainTextEdit(steps_to_text(source))
-            editor.setPlaceholderText(
-                "1. action\n   - expected result\n2. next action\n   - expected result"
-            )
+            editor = StepEditor()
+            editor.set_steps(source)
             box.addWidget(editor)
-            setattr(self, attribute, editor)
+            self.editors[attribute] = editor
+            setattr(self, f"{attribute}_editor", editor)
             layout.addWidget(group)
 
         self.reason = QLineEdit()
@@ -139,26 +142,43 @@ class EditCaseDialog(QDialog):
         layout.addWidget(buttons)
 
     def _validate_and_accept(self) -> None:
-        try:
-            self.edit()
-        except StepTextError as exc:
-            self.error.setText(str(exc))
+        edit = self.edit()
+        empty = [
+            name
+            for name, editor in self.editors.items()
+            if any(not s.action.strip() for s in editor.steps())
+        ]
+        if empty:
+            self.error.setText(
+                f"a step without an action in: {', '.join(sorted(empty))}"
+            )
+            return
+        if not edit.changes():
+            self.error.setText("nothing was changed")
             return
         self.accept()
 
     def edit(self) -> CaseEdit:
-        """The change, or a parse error for the step text."""
+        """Only what actually changed.
+
+        A field that is untouched is left out, so correcting a title stays a
+        title correction: the steps are not resubmitted, the grounds are not
+        disturbed, and the grounding rule version does not move.
+        """
         requirement_ids = tuple(
             part.strip() for part in self.requirements.text().split(",") if part.strip()
         )
-        return CaseEdit(
-            title=self.title.text().strip(),
-            objective=self.objective.text().strip(),
-            requirement_ids=requirement_ids,
-            preconditions=text_to_steps(self.preconditions_text.toPlainText()),
-            steps=text_to_steps(self.steps_text.toPlainText()),
-            postconditions=text_to_steps(self.postconditions_text.toPlainText()),
-        )
+        changes: dict = {}
+        if self.title.text().strip() != self._case.title:
+            changes["title"] = self.title.text().strip()
+        if self.objective.text().strip() != self._case.objective:
+            changes["objective"] = self.objective.text().strip()
+        if requirement_ids != tuple(self._case.requirement_ids):
+            changes["requirement_ids"] = requirement_ids
+        for name, editor in self.editors.items():
+            if not editor.unchanged():
+                changes[name] = editor.steps()
+        return CaseEdit(**changes)
 
     def note(self) -> str | None:
         return self.reason.text().strip() or None

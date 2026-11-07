@@ -84,6 +84,22 @@ class GenerationSettings:
 TYPICAL_SECONDS_PER_UNIT = 11.0
 
 
+def _effective_retriever(settings: "GenerationSettings", knowledge) -> str:
+    """What was actually in use. Named by the object, not by the wish.
+
+    Duck-typed on purpose: the application must not import an adapter, and
+    an adapter that is added later only has to say what it is.
+    """
+    if knowledge is None or not settings.use_retrieval:
+        return "off"
+    name = type(knowledge).__name__.lower()
+    if "hybrid" in name:
+        return "hybrid"
+    if "vector" in name or "embedding" in name:
+        return "embeddings"
+    return "lexical"
+
+
 def estimate_runtime(unit_count: int, settings: GenerationSettings) -> tuple[float, bool]:
     """Rough runtime for a planned scope, and whether the budget covers it."""
     expected = unit_count * TYPICAL_SECONDS_PER_UNIT
@@ -201,7 +217,12 @@ def generate_drafts(
         prompt_version=PROMPT_VERSION,
         schema_version=SCHEMA_VERSION,
         source_hash=source_hash,
-        parameters=dict(descriptor.parameters),
+        parameters={
+            **dict(descriptor.parameters),
+            # the retriever the run REALLY used, not the one that was asked
+            # for: a hybrid that fell back to lexical must not read as hybrid
+            "retrieval": _effective_retriever(settings, knowledge),
+        },
         started_at=_now(),
     )
     references = (

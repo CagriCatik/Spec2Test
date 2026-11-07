@@ -213,20 +213,106 @@ def test_editing_from_the_panel_creates_a_revision(window, monkeypatch):
     assert "revision 2" in window.log.toPlainText()
 
 
-def test_the_edit_dialog_round_trips_the_steps(window):
+def test_an_untouched_dialog_changes_nothing(window):
+    """The editor used to resubmit every step, revision and all."""
     case = a_clean_case(window)
     dialog = EditCaseDialog(window, case)
-    edit = dialog.edit()
-    assert [s.action for s in edit.steps] == [s.action for s in case.steps]
-    assert edit.title == case.title
-
-
-def test_the_edit_dialog_reports_a_broken_step_text(window):
-    case = a_clean_case(window)
-    dialog = EditCaseDialog(window, case)
-    dialog.steps_text.setPlainText("- an expectation without an action")
+    assert dialog.edit().changes() == {}
     dialog._validate_and_accept()
-    assert "line 1" in dialog.error.text()
+    assert "nothing was changed" in dialog.error.text()
+
+
+def test_the_steps_round_trip_through_the_structured_editor(window):
+    case = a_clean_case(window)
+    dialog = EditCaseDialog(window, case)
+    assert dialog.steps_editor.steps() == tuple(case.steps)
+    assert dialog.preconditions_editor.steps() == tuple(case.preconditions)
+    assert dialog.postconditions_editor.steps() == tuple(case.postconditions)
+
+
+def test_a_step_without_an_action_is_reported(window):
+    case = a_clean_case(window)
+    dialog = EditCaseDialog(window, case)
+    dialog.steps_editor.add_step()
+    dialog._validate_and_accept()
+    assert "without an action" in dialog.error.text()
+
+
+def test_a_title_only_edit_keeps_steps_measurements_and_grounds(window):
+    """Reproduced before the rewrite: a title change destroyed both.
+
+        before: measurements 1 | grounds 1
+        after : measurements 0 | grounds 0
+    """
+    from spec2test.application.review import CaseEdit, edit_case
+    from spec2test.domain.models import (
+        Ground, GroundKind, Measurement, TestStep,
+    )
+
+    project = window._project
+    case = project.test_cases[0]
+    rich = TestStep(
+        1,
+        "inject the pulse",
+        ("the latch asserts within 2.0 us",),
+        (Measurement("response time", "2.0", "us", tolerance="0.1",
+                     evidence="<= 2.0 us"),),
+        grounds=(
+            Ground(claim="2.0 us", kind=GroundKind.TARGET_REQUIREMENT,
+                   target="expectations[0]", source="SYS-REQ-1",
+                   quote="<= 2.0 us"),
+        ),
+    )
+    prepared = edit_case(project, case.case_id, CaseEdit(steps=(rich,)))
+    before_revision = prepared.revision
+
+    dialog = EditCaseDialog(window, prepared)
+    dialog.title.setText("A better title")
+    edit = dialog.edit()
+    assert set(edit.changes()) == {"title"}, edit.changes()
+
+    updated = edit_case(project, case.case_id, edit)
+    assert updated.title == "A better title"
+    assert updated.revision == before_revision + 1
+    step = updated.steps[0]
+    assert len(step.measurements) == 1
+    assert step.measurements[0].tolerance == "0.1"
+    assert step.measurements[0].evidence == "<= 2.0 us"
+    assert len(step.grounds) == 1
+    assert step.grounds[0].target == "expectations[0]"
+    assert step.expectations == ("the latch asserts within 2.0 us",), (
+        "the measurement must not have become a prose expectation"
+    )
+
+
+def test_a_technical_edit_keeps_the_grounds_of_the_steps_it_touches(window):
+    from spec2test.application.review import CaseEdit, edit_case
+    from spec2test.domain.models import (
+        Ground, GroundKind, Measurement, TestStep,
+    )
+
+    project = window._project
+    case = project.test_cases[0]
+    rich = TestStep(
+        1, "inject the pulse", ("the latch asserts within 2.0 us",),
+        (Measurement("response time", "2.0", "us", evidence="<= 2.0 us"),),
+        grounds=(Ground(claim="2.0 us", kind=GroundKind.TARGET_REQUIREMENT,
+                        target="expectations[0]", source="SYS-REQ-1",
+                        quote="<= 2.0 us"),),
+    )
+    prepared = edit_case(project, case.case_id, CaseEdit(steps=(rich,)))
+
+    dialog = EditCaseDialog(window, prepared)
+    node = dialog.steps_editor.tree.topLevelItem(0)
+    node.setText(1, "inject the pulse twice")
+    edit = dialog.edit()
+    assert set(edit.changes()) == {"steps"}
+
+    updated = edit_case(project, case.case_id, edit)
+    step = updated.steps[0]
+    assert step.action == "inject the pulse twice"
+    assert len(step.measurements) == 1 and len(step.grounds) == 1
+    assert updated.grounding_rules == "1", "a technical edit sets the rule version"
 
 
 # =====================================================================

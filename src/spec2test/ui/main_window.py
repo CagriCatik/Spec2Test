@@ -57,6 +57,7 @@ from ..adapters.export import (
     summarise_rows,
 )
 from ..application.generate import estimate_runtime
+from .sources import SourceSet
 from ..application.specification import build_specification
 from ..adapters.persistence.project_store import (
     PROJECT_SUFFIX,
@@ -157,7 +158,9 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._threadpool = QThreadPool.globalInstance()
         self._config_path = config_path or default_config_path()
-        self._spec_paths: list[Path] = []
+        #: the one list of sources. ``_spec_paths`` below is a view on it,
+        #: so what the panel shows and what a run reads cannot drift apart.
+        self.sources = SourceSet()
         self._guidance_path: Path | None = None
         self._cases: list[dict] = []
         self._run = None
@@ -265,6 +268,7 @@ class MainWindow(QMainWindow):
         self.scope.index_requested.connect(self.build_index)
         layout.addWidget(self.scope)
         layout.addWidget(self._group_task())
+        layout.addWidget(self._group_context())
         layout.addWidget(self._group_endpoint())
         layout.addWidget(self._group_model())
         layout.addWidget(self._group_generation())
@@ -383,6 +387,63 @@ class MainWindow(QMainWindow):
         self.use_gpu.toggled.connect(self._update_gpu_controls)
         form.addRow(self.gpu_box)
         return group
+
+    def _group_context(self) -> QGroupBox:
+        """How the sources are used as context - and what was really used.
+
+        Before this the choice existed only in config.yml: the window gave
+        no way to see whether retrieval was on, let alone which retriever a
+        finished run had used.
+        """
+        group = QGroupBox("Context")
+        layout = QVBoxLayout(group)
+
+        self.context_mode = QComboBox()
+        self.context_mode.addItem("Off - only the requirement itself", "off")
+        self.context_mode.addItem("Lexical search (BM25)", "lexical")
+        self.context_mode.addItem("Hybrid: lexical + embeddings", "hybrid")
+        self.context_mode.setToolTip(
+            "Off sends only the requirement under test and anything it cites "
+            "by ID.\nLexical adds full-text search over the sources.\n"
+            "Hybrid adds an embedding model; it needs "
+            'pip install -e ".[embeddings]" and a pulled embedding model, '
+            "and falls back to lexical with a warning when it is missing."
+        )
+        self.context_mode.currentIndexChanged.connect(self._on_context_mode)
+        layout.addWidget(self.context_mode)
+
+        self.lbl_context_state = QLabel("No run yet.")
+        self.lbl_context_state.setWordWrap(True)
+        self.lbl_context_state.setProperty("role", "hint")
+        layout.addWidget(self.lbl_context_state)
+        return group
+
+    def _on_context_mode(self, *_args) -> None:
+        self._describe_context_state()
+
+    def context_choice(self) -> str:
+        return self.context_mode.currentData() or "off"
+
+    def _describe_context_state(self, run=None) -> None:
+        """Say what is set, what the index holds, and what a run really used."""
+        chosen = self.context_choice()
+        parts = [f"Requested: {chosen}."]
+        if chosen == "off":
+            parts = ["Requested: off - no search, only cited requirements."]
+        else:
+            parts.append(self.scope.index_state_text() or "Index: not built yet.")
+        if run is not None:
+            used = getattr(run, "retrieval_used", None) or self._retriever_of(run)
+            parts.append(f"Last run actually used: {used}.")
+            sent = sum(len(u.context) for u in run.units)
+            parts.append(f"{sent} context item(s) sent.")
+        self.lbl_context_state.setText(" ".join(parts))
+
+    @staticmethod
+    def _retriever_of(run) -> str:
+        """What the finished run recorded; "unknown" is said, not guessed."""
+        parameters = getattr(run, "parameters", None) or {}
+        return str(parameters.get("retrieval") or "unknown")
 
     def _group_generation(self) -> QGroupBox:
         group = QGroupBox("Generation")
@@ -580,13 +641,28 @@ class MainWindow(QMainWindow):
         )
         self.num_thread.setValue(cfg.model.num_thread or 0)
 
+        # the context choice comes from the file too, otherwise the window
+        # would silently override a configured retrieval setting with "off"
+        generation = (self._loaded_config.get("generation") or {})
+        if generation.get("use_retrieval"):
+            wanted = (
+                "hybrid"
+                if str(generation.get("retrieval", "lexical")).lower() == "hybrid"
+                else "lexical"
+            )
+        else:
+            wanted = "off"
+        index = self.context_mode.findData(wanted)
+        if index >= 0:
+            self.context_mode.setCurrentIndex(index)
+
         self.max_cases_per_unit.setValue(cfg.generation.max_cases_per_unit)
         self.max_repair_attempts.setValue(cfg.generation.max_repair_attempts)
         self.group_size.setValue(cfg.generation.group_size)
 
         if cfg.paths.pdf_path:
-            self._spec_paths = [Path(cfg.paths.pdf_path)]
-            self.scope.set_sources(None, list(self._spec_paths))
+            self.sources.add_files([Path(cfg.paths.pdf_path)])
+            self.scope.show_sources(self.sources)
         if cfg.paths.prompt_path:
             self._adopt_guidance(Path(cfg.paths.prompt_path))
         self._update_gpu_controls(self.use_gpu.isChecked())
@@ -634,6 +710,10 @@ class MainWindow(QMainWindow):
                 ),
             },
             "generation": {
+                "use_retrieval": self.context_choice() != "off",
+                "retrieval": (
+                    "hybrid" if self.context_choice() == "hybrid" else "lexical"
+                ),
                 "max_cases_per_unit": self.max_cases_per_unit.value(),
                 "max_repair_attempts": self.max_repair_attempts.value(),
                 "group_size": self.group_size.value(),
@@ -644,8 +724,9 @@ class MainWindow(QMainWindow):
             self.job_timeout.value()
         )
         paths: dict[str, Any] = {}
-        if self._spec_paths:
-            paths["pdf_path"] = str(self._spec_paths[0])
+        chosen = self.sources.files() or self.sources.documents()
+        if chosen:
+            paths["pdf_path"] = str(chosen[0])
         if self._guidance_path:
             paths["prompt_path"] = str(self._guidance_path)
         if paths:
@@ -769,11 +850,9 @@ class MainWindow(QMainWindow):
         )
         if not names:
             return
-        self._spec_paths = [Path(name) for name in names]
-        # the panel is the one place that shows what was chosen
-        self.scope.set_sources(None, list(self._spec_paths))
-        for path in self._spec_paths:
-            self.log_line(f"Selected {path}")
+        added = self.sources.add_files(Path(name) for name in names)
+        self.scope.show_sources(self.sources)
+        self.log_line(f"Added {added} document(s); {self.sources.summary()}")
         self.build_index(rebuild=False)
 
     # =================================================================
@@ -783,8 +862,11 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select knowledge base folder")
         if not folder:
             return
-        self.scope.set_sources(Path(folder), [])
-        self.log_line(f"Knowledge base: {folder}")
+        if not self.sources.add_folder(Path(folder)):
+            self.log_line(f"{folder} is already a source")
+            return
+        self.scope.show_sources(self.sources)
+        self.log_line(f"Added {folder}; {self.sources.summary()}")
         self.build_index(rebuild=False)
 
     def select_knowledge_files(self) -> None:
@@ -795,14 +877,41 @@ class MainWindow(QMainWindow):
         )
         if not names:
             return
-        self.scope.set_sources(None, [Path(n) for n in names])
-        self.log_line(f"Knowledge base: {len(names)} file(s)")
+        added = self.sources.add_files(Path(n) for n in names)
+        self.scope.show_sources(self.sources)
+        self.log_line(f"Added {added} document(s); {self.sources.summary()}")
         self.build_index(rebuild=False)
 
     def knowledge_paths(self) -> list[Path]:
-        if self.scope.folder is not None:
-            return collect_documents(self.scope.folder)
-        return self.scope.files
+        """Deprecated name for :meth:`sources.documents`; one list only."""
+        return self.sources.documents()
+
+    def set_sources(self, folder=None, files=()) -> None:
+        """Replace the source set. The panel always shows what a run reads.
+
+        The scope panel has no way to set sources of its own: a second list
+        is exactly the defect this replaced.
+        """
+        self.sources.clear()
+        if folder:
+            self.sources.add_folder(folder)
+        self.sources.add_files(files or [])
+        self.scope.show_sources(self.sources)
+
+    @property
+    def _spec_paths(self) -> list[Path]:
+        """A view on the source set, kept for callers that used to set it.
+
+        Reading it can never disagree with what the panel shows, because
+        both read the same object.
+        """
+        return self.sources.documents()
+
+    @_spec_paths.setter
+    def _spec_paths(self, paths) -> None:
+        self.sources.replace_files(paths)
+        if hasattr(self, "scope"):
+            self.scope.show_sources(self.sources)
 
     def build_index(self, rebuild: bool = False) -> None:
         paths = self.knowledge_paths()
@@ -905,7 +1014,8 @@ class MainWindow(QMainWindow):
         return list(self._spec_paths)
 
     def start_run(self) -> None:
-        specs = self.specifications() or self.knowledge_paths()
+        # one list: what the panel shows is what the run reads
+        specs = self.sources.documents()
         if not specs:
             QMessageBox.warning(
                 self,
@@ -1071,11 +1181,12 @@ class MainWindow(QMainWindow):
         their targets.
         """
         if self._project is None:
+            chosen = self.sources.documents()
             self._project = project_from_run(
                 run,
                 self._last_requirements,
                 self._last_documents,
-                name=(self._spec_paths[0].stem if self._spec_paths else "project"),
+                name=(chosen[0].stem if chosen else "project"),
             )
         else:
             try:
@@ -1512,6 +1623,7 @@ class MainWindow(QMainWindow):
                 project.name, len(project.documents), len(project.requirements)
             )
         self._fill_summary()
+        self._describe_context_state(self._run)
         self._enable_exports(bool(self._cases))
         self.review.show_case(project, None)
 

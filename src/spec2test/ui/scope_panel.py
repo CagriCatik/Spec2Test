@@ -60,10 +60,12 @@ class ScopePanel(QWidget):
 
     index_requested = Signal(bool)   # True = rebuild from scratch
     scope_changed = Signal()
+    sources_changed = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._requirements: list = []
+        self._sources = None
         self._folder: Path | None = None
         self._files: list[Path] = []
 
@@ -72,14 +74,26 @@ class ScopePanel(QWidget):
 
         base = QGroupBox("Knowledge base")
         base_layout = QVBoxLayout(base)
-        self.lbl_base = QLabel("No knowledge base selected")
+        self.lbl_base = QLabel("No source added yet.")
         self.lbl_base.setWordWrap(True)
         base_layout.addWidget(self.lbl_base)
+        #: the sources themselves, so a user can see and remove each one
+        self.source_list = QListWidget()
+        self.source_list.setMaximumHeight(96)
+        self.source_list.setToolTip(
+            "Every source a run reads. This list is the only one: what is "
+            "shown here is what the next run uses."
+        )
+        base_layout.addWidget(self.source_list)
         buttons = QHBoxLayout()
-        self.btn_folder = QPushButton("Choose folder…")
-        self.btn_files = QPushButton("Choose files…")
+        self.btn_folder = QPushButton("Add folder…")
+        self.btn_files = QPushButton("Add documents…")
+        self.btn_remove = QPushButton("Remove")
+        self.btn_remove.setEnabled(False)
+        self.btn_remove.clicked.connect(self._remove_selected)
         buttons.addWidget(self.btn_folder)
         buttons.addWidget(self.btn_files)
+        buttons.addWidget(self.btn_remove)
         base_layout.addLayout(buttons)
 
         self.lbl_index = QLabel("Index: not built yet")
@@ -139,17 +153,28 @@ class ScopePanel(QWidget):
         self.scope_changed.connect(self._update_scope_label)
 
     # ------------------------------------------------------- knowledge --
-    def set_sources(self, folder: Path | None, files: list[Path]) -> None:
-        self._folder = folder
-        self._files = list(files)
-        if folder:
-            self.lbl_base.setText(f"Folder: {folder}")
-        elif files:
-            self.lbl_base.setText(
-                files[0].name if len(files) == 1 else f"{len(files)} files"
+    def show_sources(self, sources) -> None:
+        """Render the one source set. There is no second list to drift from."""
+        self._sources = sources
+        self._folder = next(iter(sources.folders()), None)
+        self._files = list(sources.files())
+        self.source_list.clear()
+        for entry in sources.entries:
+            item = QListWidgetItem(
+                entry.label() + ("" if entry.exists else "   (missing)")
             )
-        else:
-            self.lbl_base.setText("No knowledge base selected")
+            item.setToolTip(str(entry.path))
+            self.source_list.addItem(item)
+        self.lbl_base.setText(sources.summary())
+        self.btn_remove.setEnabled(bool(sources.entries))
+
+    def _remove_selected(self) -> None:
+        row = self.source_list.currentRow()
+        if row < 0 or self._sources is None:
+            return
+        self._sources.remove(row)
+        self.show_sources(self._sources)
+        self.sources_changed.emit()
 
     @property
     def folder(self) -> Path | None:
@@ -158,6 +183,10 @@ class ScopePanel(QWidget):
     @property
     def files(self) -> list[Path]:
         return list(self._files)
+
+    def index_state_text(self) -> str:
+        """What the index currently holds, for the context panel to echo."""
+        return self.lbl_index.text()
 
     def show_index_state(
         self, summary: str, documents: int, requirements: int, warnings: list[str]

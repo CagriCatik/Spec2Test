@@ -996,7 +996,13 @@ def test_the_window_starts_with_a_document_named_in_the_config(
     window = MainWindow(config_path=config)
     try:
         assert window.specifications() == [spec_a]
-        assert spec_a.name in window.scope.lbl_base.text()
+        # the file is named in the source list, not only counted in the label
+        shown = [
+            window.scope.source_list.item(i).text()
+            for i in range(window.scope.source_list.count())
+        ]
+        assert any(spec_a.name in line for line in shown), shown
+        assert "1 document(s) will be read" in window.scope.lbl_base.text()
     finally:
         window._project_dirty = False
         window.close()

@@ -90,7 +90,7 @@ def window(app, tmp_path, monkeypatch, knowledge):
     window._threadpool = SynchronousPool()
     window.model_name.setCurrentText("test-model:1b")
     window._index_path = tmp_path / "index" / "knowledge.db"
-    window.scope.set_sources(knowledge, [])
+    window.set_sources(knowledge, [])
     return window
 
 

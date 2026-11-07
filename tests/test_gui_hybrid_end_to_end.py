@@ -104,7 +104,7 @@ def hybrid_window(app, tmp_path, monkeypatch):
         build_importers(),
     )
     window._index_path = index_path
-    window.scope.set_sources(corpus, [])
+    window.set_sources(corpus, [])
     window.build_index(rebuild=False)
     app.processEvents()
     yield window, tmp_path
