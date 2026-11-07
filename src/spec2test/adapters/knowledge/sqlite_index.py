@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS passages (
     char_start  INTEGER NOT NULL,
     char_end    INTEGER NOT NULL,
     text        TEXT NOT NULL,
+    -- repeated context that is not part of text, such as a table's header
+    -- rows. Stored apart so text stays the exact document slice.
+    prefix      TEXT,
     search_text TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS passages_external
@@ -187,11 +190,13 @@ class SqliteKnowledgeIndex:
                 ),
             )
             for passage in passages:
-                search_text = normalise_for_search(passage.text)
+                # column names are searchable: a query for "debounce time"
+                # must reach the rows of the table that has that column
+                search_text = passage.search_text
                 self._connection.execute(
                     "INSERT INTO passages(passage_id, document_id, kind, "
                     "external_id, heading, page, char_start, char_end, text, "
-                    "search_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "prefix, search_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         passage.passage_id,
                         passage.document_id,
@@ -202,6 +207,7 @@ class SqliteKnowledgeIndex:
                         passage.char_start,
                         passage.char_end,
                         passage.text,
+                        passage.prefix,
                         search_text,
                     ),
                 )
@@ -342,4 +348,5 @@ def _passage(row: sqlite3.Row) -> Passage:
         heading=row["heading"],
         external_id=row["external_id"],
         page=row["page"],
+        prefix=row["prefix"] if "prefix" in row.keys() else None,
     )

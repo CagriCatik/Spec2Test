@@ -94,12 +94,18 @@ def _context_block(context: Sequence) -> str:
     parts: list[str] = []
     for item in context:
         locations = ", ".join(span.label() for span in item.spans)
+        body = (
+            # rows cut out of a table, with the columns they belong to
+            f"columns:\n{item.prefix}\nrows:\n{item.text}"
+            if getattr(item, "prefix", None)
+            else f"text:\n{item.text}"
+        )
         parts.append(
             f"context_ref: {item.external_id or item.requirement_id}\n"
             f"source: {item.label}\n"
             f"position: {locations}\n"
             f"cited_by: {', '.join(item.cited_by)}\n"
-            f"text:\n{item.text}"
+            f"{body}"
         )
     return "\n\n---\n\n".join(parts)
 

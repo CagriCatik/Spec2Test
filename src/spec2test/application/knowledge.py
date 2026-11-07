@@ -23,10 +23,19 @@ from .ports import ImportedDocument
 
 #: Raising this invalidates every indexed passage: a file whose content hash
 #: is unchanged still has to be read again when the parser changed.
-PARSER_VERSION = "2"
+PARSER_VERSION = "3"
 
 MAX_PASSAGE_CHARS = 2_400
 MIN_PASSAGE_CHARS = 40
+#: A table is a list of independent facts, not prose. Cutting it into small
+#: groups makes a single DTC or signal findable instead of drowning it in
+#: fourteen neighbours, and keeps one row's worth of budget from costing the
+#: price of a whole table.
+MAX_TABLE_CHARS = 900
+#: a row of a Markdown table: ``| a | b |``
+_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+#: the delimiter under a table's header: ``| :--- | ---: |``
+_TABLE_DELIMITER = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 _HEADING = re.compile(r"^(?P<marks>#{1,6})\s*(?P<title>.+?)\s*$", re.MULTILINE)
 #: A "**Label:** value" line. The header block of a document consists of
@@ -117,14 +126,28 @@ class Passage:
     heading: str | None = None
     external_id: str | None = None
     page: int | None = None
+    #: repeated context that is NOT part of ``text``: the header rows of the
+    #: table this passage was cut out of. Kept separate so ``text`` stays the
+    #: exact slice ``document.text[char_start:char_end]`` - a quote that no
+    #: longer matches its position is worse than a missing column name.
+    prefix: str | None = None
 
     @property
     def search_text(self) -> str:
-        return normalise_for_search(self.text)
+        """What the index matches against, column names included."""
+        return normalise_for_search(self.full_text)
+
+    @property
+    def full_text(self) -> str:
+        """The passage as a reader should see it: column meaning, then rows."""
+        if not self.prefix:
+            return self.text
+        return f"{self.prefix}\n{self.text}"
 
     @property
     def size(self) -> int:
-        return len(self.text)
+        """Budget cost. The prefix is sent too, so it counts."""
+        return len(self.full_text)
 
 
 @dataclass
@@ -134,6 +157,71 @@ class DocumentIndexEntry:
     document: SourceDocument
     passages: list[Passage] = field(default_factory=list)
     parser_version: str = PARSER_VERSION
+
+
+def table_header(lines: Sequence[str]) -> tuple[str, int] | None:
+    """The header and delimiter row of a Markdown table, if the block is one.
+
+    Returns the two rows joined, and how many lines they took.
+    """
+    rows = [i for i, line in enumerate(lines) if _TABLE_ROW.match(line)]
+    if len(rows) < 3:
+        return None
+    first = rows[0]
+    if first + 1 >= len(lines) or not _TABLE_DELIMITER.match(lines[first + 1]):
+        return None
+    return "\n".join(lines[first : first + 2]), first + 2
+
+
+def _split_table(
+    text: str, start: int, limit: int
+) -> list[tuple[str, int, int, str | None]] | None:
+    """Cut a Markdown table into row groups, each keeping the column meaning.
+
+    Returns ``None`` when the block is not a table, so the caller falls back
+    to splitting on blank lines. A group never splits a row.
+    """
+    lines = text.splitlines(keepends=True)
+    stripped = [line.rstrip("\n") for line in lines]
+    found = table_header(stripped)
+    if found is None:
+        return None
+    header, body_index = found
+
+    # everything up to and including the header rows stays as one passage:
+    # it is the section's own introduction plus the column meaning
+    head_chars = sum(len(line) for line in lines[:body_index])
+    parts: list[tuple[str, int, int, str | None]] = []
+    # the header rows alone are not a passage: they say nothing on their own
+    # and every row group repeats them anyway
+    head_prose = [
+        line
+        for line in stripped[:body_index]
+        if line.strip() and not _TABLE_ROW.match(line) and not line.lstrip().startswith("#")
+    ]
+    if head_chars and head_prose:
+        parts.append((text[:head_chars], start, start + head_chars, None))
+
+    cursor = head_chars
+    group_start = cursor
+    group: list[str] = []
+    budget = max(limit, len(header) + 200)
+
+    def flush() -> None:
+        if not group:
+            return
+        body = "".join(group)
+        parts.append((body, start + group_start, start + group_start + len(body), header))
+
+    for line in lines[body_index:]:
+        if group and len(header) + sum(map(len, group)) + len(line) > budget:
+            flush()
+            group_start = cursor
+            group = []
+        group.append(line)
+        cursor += len(line)
+    flush()
+    return parts
 
 
 def _split_long(text: str, start: int, limit: int) -> list[tuple[str, int, int]]:
@@ -163,12 +251,21 @@ def segment_document(
     requirements: Sequence[Requirement] = (),
     *,
     max_chars: int = MAX_PASSAGE_CHARS,
+    table_chars: int = MAX_TABLE_CHARS,
 ) -> list[Passage]:
     """Cut a document into passages.
 
-    Captured requirements stay whole and keep their external ID. The rest of
+    Captured requirements stay whole and keep their external ID - a
+    requirement cut in half is worse than one that is too long. The rest of
     the document is split along its headings; anything the requirements
     already cover is skipped, so the same sentence is not indexed twice.
+
+    A Markdown table is cut by rows instead, into groups of about
+    ``table_chars``. Each group carries the table's header rows as ``prefix``,
+    so a group of five DTC rows still says which column is the code, which
+    the debounce time and which the safety reaction. Before this, a long
+    table was cut at an arbitrary newline and every chunk after the first was
+    a wall of values with no column meaning at all.
     """
     document = imported.document
     text = document.text
@@ -211,24 +308,38 @@ def segment_document(
             sections.append((heading.group("title"), heading.start(), end))
 
     for heading, start, end in sections:
-        for chunk, chunk_start, chunk_end in _split_long(
-            text[start:end], start, max_chars
-        ):
+        section = text[start:end]
+        # a table is cut by rows, so one DTC or one signal is findable on its
+        # own and every group still states what its columns mean
+        chunks = _split_table(section, start, table_chars)
+        if chunks is None:
+            chunks = [
+                (chunk, chunk_start, chunk_end, None)
+                for chunk, chunk_start, chunk_end in _split_long(
+                    section, start, max_chars
+                )
+            ]
+        for chunk, chunk_start, _chunk_end, prefix in chunks:
             remaining = _subtract(chunk, chunk_start, covered)
             for part, part_start in remaining:
-                if len(part.strip()) < MIN_PASSAGE_CHARS:
+                # a group of table rows is informative with its columns even
+                # when the rows alone are short; dropping it would lose the
+                # tail of every table
+                informative = len(part.strip()) + (len(prefix) if prefix else 0)
+                if informative < MIN_PASSAGE_CHARS or not part.strip():
                     continue
-                if is_metadata_block(part):
+                if prefix is None and is_metadata_block(part):
                     continue  # already stored as document metadata
                 passages.append(
                     Passage(
                         passage_id=f"{document.document_id}:sec:{part_start}",
                         document_id=document.document_id,
-                        kind=classify(heading, part),
+                        kind=classify(heading, prefix or part),
                         text=part,
                         char_start=part_start,
                         char_end=part_start + len(part),
                         heading=heading,
+                        prefix=prefix,
                     )
                 )
     passages.sort(key=lambda p: (p.char_start, p.passage_id))

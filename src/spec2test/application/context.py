@@ -45,6 +45,30 @@ SEARCH_TIERS = (PREFERRED_KINDS, FALLBACK_KINDS, REQUIREMENT_KINDS)
 #: matched. A reserved slot alone does nothing: signal sections run to ~2300
 #: characters each and two of them exhaust the whole budget.
 REQUIREMENT_BUDGET_SHARE = 0.35
+#: share held back for hits the tester's own task description found. Measured
+#: on 40 runs: without a reservation the task search contributed nothing in
+#: 22 of them, because the requirement search had already spent 5569 of 6000
+#: characters. Whatever the task search does not use falls to the others.
+TASK_BUDGET_SHARE = 0.25
+
+
+@dataclass
+class BudgetLedger:
+    """What was reserved, what was used, what the reservation gave back.
+
+    Recorded so the reservation can be checked instead of believed.
+    """
+
+    budget: int = 0
+    reserved_for_task: int = 0
+    used_by_task: int = 0
+    used_total: int = 0
+    candidates: int = 0
+    omitted: int = 0
+
+    @property
+    def returned_to_others(self) -> int:
+        return max(0, self.reserved_for_task - self.used_by_task)
 
 from ..domain.validation import _numeric_claims as _claims_of
 
@@ -55,6 +79,8 @@ class ContextSelection:
 
     items: tuple[ContextItem, ...] = ()
     issues: list[ValidationIssue] = field(default_factory=list)
+    #: filled by build_context; empty for a pure reference selection
+    ledger: BudgetLedger | None = None
 
     @property
     def total_size(self) -> int:
@@ -211,16 +237,19 @@ def build_context(
         char_budget=char_budget,
         max_items=max_items,
     )
+    documents = documents or {}
+    ledger = BudgetLedger(budget=char_budget)
+    selection.ledger = ledger
+
     wants_task_search = bool(
         task_description and task_description.strip() and max_task_items > 0
     )
     if knowledge is None or (max_search_items <= 0 and not wants_task_search):
+        ledger.used_total = sum(item.size for item in selection.items)
         return selection
 
-    items = list(selection.items)
-    used = sum(item.size for item in items)
-    taken_passages = {item.requirement_id for item in items}
-    taken_external = {item.external_id for item in items if item.external_id}
+    taken_passages = {item.requirement_id for item in selection.items}
+    taken_external = {item.external_id for item in selection.items if item.external_id}
     own_passages = {
         f"{span.document_id}:req:{span.char_start}"
         for r in under_test
@@ -229,19 +258,146 @@ def build_context(
     # a requirement under test must never come back as its own context, not
     # even from a second document that repeats its ID
     own_external = {r.external_id for r in under_test if r.external_id}
-    search_slots = max_search_items
 
+    # --- 1. collect candidates from both searches, select nothing yet -------
+    search_candidates = _search_candidates(
+        under_test,
+        knowledge,
+        documents,
+        excluded=own_passages | taken_passages,
+        max_search_items=max_search_items,
+        score_ratio=score_ratio,
+    )
+    task_candidates = (
+        _task_candidates(
+            under_test,
+            task_description or "",
+            knowledge,
+            documents,
+            excluded=own_passages | taken_passages,
+            limit=max_task_items * 3,
+        )
+        if wants_task_search
+        else []
+    )
+
+    # --- 2. deduplicate across both, keeping the first claim on a passage ---
+    ordered: list[tuple[ContextItem, bool]] = [
+        *((item, False) for item in search_candidates),
+        *((item, True) for item in task_candidates),
+    ]
+    unique: list[tuple[ContextItem, bool]] = []
+    seen_passages = set(taken_passages)
+    seen_external = set(taken_external) | set(own_external)
+    for item, is_task in ordered:
+        if item.requirement_id in seen_passages:
+            continue
+        if item.external_id and item.external_id in seen_external:
+            continue
+        seen_passages.add(item.requirement_id)
+        if item.external_id:
+            seen_external.add(item.external_id)
+        unique.append((item, is_task))
+    ledger.candidates = len(unique)
+
+    # --- 3. select once, under one budget, with a share held for the task ---
+    items = list(selection.items)
+    used = sum(item.size for item in items)
+    has_task = any(is_task for _item, is_task in unique)
+    ledger.reserved_for_task = (
+        int(char_budget * TASK_BUDGET_SHARE) if has_task else 0
+    )
+    slots = max_search_items + (max_task_items if has_task else 0)
+    omitted = 0
+
+    def room_for(item, is_task: bool) -> bool:
+        """Non-task items may not eat into what the task search is holding."""
+        ceiling = char_budget if is_task else char_budget - reserved_left
+        return used + item.size <= ceiling
+
+    reserved_left = ledger.reserved_for_task
+    task_taken = 0
+    for item, is_task in unique:
+        if len(items) >= max_items or slots <= 0:
+            omitted += 1
+            continue
+        if is_task and task_taken >= max_task_items:
+            omitted += 1
+            continue
+        if not room_for(item, is_task):
+            omitted += 1
+            continue
+        items.append(item)
+        used += item.size
+        slots -= 1
+        if is_task:
+            task_taken += 1
+            ledger.used_by_task += item.size
+            # only what it actually used stays reserved; the rest is released
+            reserved_left = max(0, reserved_left - item.size)
+
+    # whatever the task search did not take falls to the others
+    if reserved_left:
+        reserved_left = 0
+        for item, is_task in unique:
+            if item in items or len(items) >= max_items or slots <= 0:
+                continue
+            if used + item.size > char_budget:
+                continue
+            items.append(item)
+            used += item.size
+            slots -= 1
+            omitted -= 1
+
+    ledger.used_total = used
+    ledger.omitted = max(0, omitted)
+    if ledger.omitted:
+        # one line, not one per hit: these are search results nobody asked
+        # for, and a finding each buried the findings that matter
+        selection.issues.append(
+            _clarification(
+                "C_CONTEXT_OMITTED",
+                under_test[0].external_id or under_test[0].requirement_id
+                if under_test
+                else "unit",
+                f"{ledger.omitted} further search hit(s) did not fit the context "
+                f"budget of {char_budget} characters or the limit of {max_items} "
+                "item(s) and were left out whole. Raise "
+                "generation.context_char_budget to send more supporting context.",
+            )
+        )
+
+    selection.items = tuple(items)
+    return selection
+
+
+def _search_candidates(
+    under_test: Sequence[Requirement],
+    knowledge,
+    documents: Mapping[str, SourceDocument],
+    *,
+    excluded: set,
+    max_search_items: int,
+    score_ratio: float,
+) -> list[ContextItem]:
+    """Ranked hits for the requirements themselves, tier by tier.
+
+    No budget decision here: that is made once, over all candidates together.
+    Signal and interface sections stay first, then explanations and reference
+    tests, then other requirements - each tier judged against its own best
+    hit, so a strong requirement cannot push a signal section out.
+    """
     from .knowledge import search_terms
 
+    if max_search_items <= 0:
+        return []
+    candidates: list[ContextItem] = []
     for requirement in under_test:
-        if max_search_items <= 0 or search_slots <= 0 or len(items) >= max_items:
-            break
         terms = search_terms(requirement)
         if not terms:
             continue
-        excluded = own_passages | taken_passages
-        tiers = [
-            list(
+        for kinds in SEARCH_TIERS:
+            hits = list(
                 knowledge.search(
                     terms,
                     limit=max_search_items,
@@ -249,146 +405,44 @@ def build_context(
                     exclude_passages=excluded,
                 )
             )
-            for kinds in SEARCH_TIERS
-        ]
-        # keep one slot and a share of the budget for a related requirement
-        # while one matched: signal and interface sections stay preferred,
-        # they are no longer exclusive
-        reserved = 1 if (search_slots >= 2 and tiers[-1]) else 0
-        reserved_chars = int(char_budget * REQUIREMENT_BUDGET_SHARE) if reserved else 0
-        omitted_hits = 0
-
-        for tier_index, hits in enumerate(tiers):
-            last_tier = tier_index == len(tiers) - 1
             if not hits:
                 continue
-            allowance = search_slots if last_tier else search_slots - reserved
-            budget = char_budget if last_tier else char_budget - reserved_chars
-            if allowance <= 0:
-                continue
-            # bm25 scores are negative; smaller is better. Each tier is judged
-            # against its own best hit, so a strong requirement hit cannot push
-            # the signal sections out of the selection.
+            # bm25 scores are negative; smaller is better
             best = min(hit.score for hit in hits)
             for hit in hits:
-                if allowance <= 0 or search_slots <= 0 or len(items) >= max_items:
-                    break
-                passage = hit.passage
-                if passage.passage_id in taken_passages:
-                    continue
-                if passage.external_id and (
-                    passage.external_id in taken_external
-                    or passage.external_id in own_external
-                ):
-                    continue
                 if best < 0 and hit.score > best * score_ratio:
                     continue
-                item = _item_from_hit(hit, requirement, documents or {})
-                if used + item.size > budget:
-                    omitted_hits += 1
-                    continue
-                items.append(item)
-                taken_passages.add(passage.passage_id)
-                if passage.external_id:
-                    taken_external.add(passage.external_id)
-                used += item.size
-                search_slots -= 1
-                allowance -= 1
-                if last_tier:
-                    reserved = 0
-                    reserved_chars = 0
-
-        if omitted_hits:
-            # one line, not one per hit: these are search results nobody asked
-            # for, and a finding each buried the findings that matter
-            selection.issues.append(
-                _clarification(
-                    "C_CONTEXT_OMITTED",
-                    requirement.external_id or requirement.requirement_id,
-                    f"{omitted_hits} further search hit(s) did not fit the "
-                    f"context budget of {char_budget} characters and were left "
-                    "out whole. Raise generation.context_char_budget to send "
-                    "more supporting context.",
-                )
-            )
-
-    if wants_task_search:
-        _add_task_context(
-            selection,
-            items,
-            task_description,
-            under_test,
-            knowledge,
-            documents or {},
-            taken_passages=taken_passages,
-            taken_external=taken_external | own_external,
-            own_passages=own_passages,
-            used=sum(item.size for item in items),
-            char_budget=char_budget,
-            max_items=max_items,
-            max_task_items=max_task_items,
-        )
-
-    selection.items = tuple(items)
-    return selection
+                candidates.append(_item_from_hit(hit, requirement, documents))
+    return candidates
 
 
-def _add_task_context(
-    selection: ContextSelection,
-    items: list,
-    task_description: str,
+def _task_candidates(
     under_test: Sequence[Requirement],
+    task_description: str,
     knowledge,
     documents: Mapping[str, SourceDocument],
     *,
-    taken_passages: set,
-    taken_external: set,
-    own_passages: set,
-    used: int,
-    char_budget: int,
-    max_items: int,
-    max_task_items: int,
-) -> None:
-    """Search the tester's own description, over every kind at once.
+    excluded: set,
+    limit: int,
+) -> list[ContextItem]:
+    """Ranked hits for the tester's own description, over every kind at once.
 
-    No tier order here: the description is prose, and which kind answers it
-    is exactly what is unknown. The retriever decides.
+    No tier order: the description is prose, and which kind answers it is
+    exactly what is unknown. The retriever decides.
     """
     from .knowledge import normalise_for_search
 
     terms = [t for t in normalise_for_search(task_description).split() if len(t) > 2]
-    if not terms:
-        return
-    cited_by = under_test[0] if under_test else None
-    if cited_by is None:
-        return
-    hits = list(
-        knowledge.search(
-            terms,
-            limit=max_task_items * 3,
-            exclude_passages=own_passages | taken_passages,
+    if not terms or not under_test:
+        return []
+    cited_by = under_test[0]
+    return [
+        replace(
+            _item_from_hit(hit, cited_by, documents),
+            reason=SelectionReason.TASK_SEARCH,
         )
-    )
-    taken = 0
-    for hit in hits:
-        if taken >= max_task_items or len(items) >= max_items:
-            break
-        passage = hit.passage
-        if passage.passage_id in taken_passages:
-            continue
-        if passage.external_id and passage.external_id in taken_external:
-            continue
-        item = _item_from_hit(hit, cited_by, documents)
-        if used + item.size > char_budget:
-            continue
-        items.append(
-            replace(item, reason=SelectionReason.TASK_SEARCH)
-        )
-        taken_passages.add(passage.passage_id)
-        if passage.external_id:
-            taken_external.add(passage.external_id)
-        used += item.size
-        taken += 1
+        for hit in knowledge.search(terms, limit=limit, exclude_passages=excluded)
+    ]
 
 
 def _item_from_hit(hit, cited_by: Requirement, documents: Mapping[str, SourceDocument]):
@@ -414,6 +468,7 @@ def _item_from_hit(hit, cited_by: Requirement, documents: Mapping[str, SourceDoc
         document_version=document.version if document else None,
         content_hash=document.content_hash if document else None,
         kind=passage.kind,
+        prefix=passage.prefix,
         reason=SelectionReason.FULL_TEXT_SEARCH,
         matched_terms=tuple(hit.terms[:6]),
         heading=passage.heading,

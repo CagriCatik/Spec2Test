@@ -344,6 +344,10 @@ class ContextItem:
     content_hash: str | None = None
     kind: ContextKind = ContextKind.REQUIREMENT
     reason: SelectionReason = SelectionReason.EXPLICIT_REFERENCE
+    #: repeated context that is not part of ``text``: the header rows of the
+    #: table the passage was cut from, so a group of rows still states what
+    #: its columns mean
+    prefix: str | None = None
     #: what the search matched on, when it came from the full-text index
     matched_terms: tuple[str, ...] = ()
     heading: str | None = None
@@ -365,7 +369,8 @@ class ContextItem:
 
     @property
     def size(self) -> int:
-        return len(self.text)
+        """Budget cost. The prefix is sent with the text, so it counts."""
+        return len(self.text) + (len(self.prefix) + 1 if self.prefix else 0)
 
 
 @dataclass(frozen=True)
