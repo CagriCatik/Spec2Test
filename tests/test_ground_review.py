@@ -110,8 +110,10 @@ CORRECT = TestStep(
 
 
 def answer(*findings) -> str:
+    """Every finding carries the claim_id the request gave it."""
+    filled = [{"claim_id": "step0-g0", **f} for f in findings]
     return json.dumps(
-        {"schema_version": REVIEW_SCHEMA_VERSION, "findings": list(findings)}
+        {"schema_version": REVIEW_SCHEMA_VERSION, "findings": filled}
     )
 
 
@@ -251,8 +253,8 @@ def test_an_invented_verdict_is_refused():
 def test_a_finding_about_a_claim_that_is_not_there_is_flagged():
     """The agent must not smuggle in a claim nobody made."""
     model = ScriptedModel(
-        [answer({"claim": "999 V", "verdict": "mismatched_state",
-                 "explanation": "invented"})]
+        [answer({"claim_id": "nope-g9", "claim": "999 V",
+                 "verdict": "mismatched_state", "explanation": "invented"})]
     )
     review = review_grounds(case_with(CORRECT), [requirement()], model)
     assert "C_GROUND_REVIEW_UNMATCHED" in {i.code for i in review.issues}
@@ -354,7 +356,8 @@ def test_a_claim_the_agent_skipped_is_reported_as_unjudged():
         ),
     )
     model = ScriptedModel(
-        [answer({"claim": "4.15 V", "verdict": "fits", "explanation": "ok"})]
+        [answer({"claim_id": "step0-g0", "claim": "4.15 V", "verdict": "fits",
+                 "explanation": "ok"})]
     )
     review = review_grounds(case_with(step), [requirement()], model)
 
@@ -469,3 +472,169 @@ def test_an_unambiguous_loose_ground_still_counts():
         ),
     )
     assert check_grounds(case_with(step), [requirement()]) == []
+
+
+# ============ two identical numbers in different fields, different verdicts ==
+TWO_THRESHOLDS = TestStep(
+    1,
+    "sweep the supply voltage up and then down",
+    (
+        "the heater switches on at 12 V",
+        "the heater switches off at 12 V",
+    ),
+    grounds=(
+        Ground(
+            claim="12 V", kind=GroundKind.TARGET_REQUIREMENT,
+            target="expectations[0]", source="SYS-REQ-0001",
+            quote="The 12 V auxiliary supply powers the monitoring board.",
+        ),
+        Ground(
+            claim="12 V", kind=GroundKind.TARGET_REQUIREMENT,
+            target="expectations[1]", source="SYS-REQ-0001",
+            quote="The 12 V auxiliary supply powers the monitoring board.",
+        ),
+    ),
+)
+
+
+def test_each_of_two_identical_values_gets_its_own_claim_id():
+    messages = build_review_messages(case_with(TWO_THRESHOLDS), [requirement()])
+    user = messages[1].content
+    assert user.count("claim_id:") == 2
+    assert "claim_id: step0-g0" in user and "claim_id: step0-g1" in user
+    assert "field: expectations[0]" in user and "field: expectations[1]" in user
+
+
+def test_two_identical_values_can_receive_different_verdicts():
+    """Matching on the claim text would have given both the same verdict."""
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "schema_version": REVIEW_SCHEMA_VERSION,
+                    "findings": [
+                        {"claim_id": "step0-g0", "claim": "12 V",
+                         "verdict": "mismatched_quantity", "confidence": "high",
+                         "explanation": "12 V is the supply rail, not a switch-on point"},
+                        {"claim_id": "step0-g1", "claim": "12 V",
+                         "verdict": "fits", "confidence": "low",
+                         "explanation": "accepted for the switch-off point"},
+                    ],
+                }
+            )
+        ]
+    )
+    review = review_grounds(case_with(TWO_THRESHOLDS), [requirement()], model)
+
+    assert review.complete
+    outcomes = {v.claim_id: v.outcome for v in review.verdicts}
+    assert outcomes == {"step0-g0": "finding", "step0-g1": "clear"}
+    assert [i.path for i in review.issues] == ["TC-1.steps[0].expectations[0]"]
+    assert "supply rail" in review.issues[0].message
+
+
+def test_one_answer_for_two_identical_values_leaves_the_other_unjudged():
+    """The text alone used to cover both. Now the second comes back open."""
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "schema_version": REVIEW_SCHEMA_VERSION,
+                    "findings": [
+                        {"claim_id": "step0-g0", "claim": "12 V",
+                         "verdict": "fits", "explanation": "ok"}
+                    ],
+                }
+            )
+        ]
+    )
+    review = review_grounds(case_with(TWO_THRESHOLDS), [requirement()], model)
+    outcomes = {v.claim_id: v.outcome for v in review.verdicts}
+    assert outcomes == {"step0-g0": "clear", "step0-g1": "not_checked"}
+    assert review.complete is False
+    assert "C_GROUND_REVIEW_NOT_CHECKED" in {i.code for i in review.issues}
+
+
+def test_a_claim_id_the_request_did_not_give_is_refused():
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "schema_version": REVIEW_SCHEMA_VERSION,
+                    "findings": [
+                        {"claim_id": "made-up", "claim": "12 V",
+                         "verdict": "mismatched_state", "explanation": "x"}
+                    ],
+                }
+            )
+        ]
+    )
+    review = review_grounds(case_with(TWO_THRESHOLDS), [requirement()], model)
+    assert "C_GROUND_REVIEW_UNMATCHED" in {i.code for i in review.issues}
+    assert all(v.outcome == "not_checked" for v in review.verdicts)
+
+
+def test_a_finding_without_a_claim_id_is_refused():
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "schema_version": REVIEW_SCHEMA_VERSION,
+                    "findings": [{"claim": "12 V", "verdict": "fits"}],
+                }
+            )
+        ]
+    )
+    review = review_grounds(case_with(TWO_THRESHOLDS), [requirement()], model)
+    assert not review.ok and "claim_id" in review.error
+    assert all(v.outcome == "not_checked" for v in review.verdicts)
+
+
+# ========== a number inside a quote is never adopted as a calculation input ==
+def test_a_number_in_the_quote_is_not_used_as_a_calculation_input():
+    """The real answer that was rejected: values only inside the quotes.
+
+    The check must report the gap, never read the number out of the quote
+    and pretend the arithmetic was given.
+    """
+    from spec2test.domain.grounding import check_calculation, check_grounds
+    from spec2test.domain.models import GroundInput
+
+    ground = Ground(
+        claim="255 mV",
+        kind=GroundKind.CALCULATION,
+        target="measurements[0]",
+        inputs=(
+            GroundInput(source="SYS-REQ-0001", quote="the primary 100 uOhm shunt"),
+            GroundInput(source="SYS-REQ-0001", quote="a pulse simulating 2550 A"),
+        ),
+        formula="V = I * R = 2550 A * 100 uOhm = 255 mV",
+    )
+    problem = check_calculation(ground)
+    assert problem and "has no value of its own" in problem, problem
+
+    step = TestStep(
+        1, "inject the pulse", ("the amplitude is 255 mV",), grounds=(ground,)
+    )
+    issues = check_grounds(case_with(step), [requirement()])
+    assert "C_GROUND_CALCULATION_NOT_REPRODUCIBLE" in {i.code for i in issues}
+
+
+def test_an_incomplete_calculation_reliably_blocks_approval():
+    from spec2test.domain.models import GroundInput
+    from spec2test.domain.validation import may_approve
+
+    ground = Ground(
+        claim="255 mV",
+        kind=GroundKind.CALCULATION,
+        target="expectations[0]",
+        inputs=(GroundInput(source="SYS-REQ-0001", quote="2550 A"),),
+        formula="I * R",
+    )
+    case = case_with(
+        TestStep(1, "inject", ("the amplitude is 255 mV",), grounds=(ground,))
+    )
+    allowed, report = may_approve(case, [requirement()])
+    assert allowed is False
+    assert report.blocks_draft is False, "but the draft is still storable"
+    assert "C_GROUND_CALCULATION_NOT_REPRODUCIBLE" in report.codes()

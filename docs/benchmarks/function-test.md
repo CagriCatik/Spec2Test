@@ -174,9 +174,12 @@ from"), JSON und Excel.
 beurteilt, und die deterministische Prüfung hat an den beiden
 Zitat-Belegen des echten Entwurfs nichts zu beanstanden gehabt.
 
-**Übersehen:** nichts in dieser Stichprobe — aber die Stichprobe ist
-winzig. Drei synthetische Fälle und zwei echte Behauptungen sagen nichts
-über die Trefferquote.
+**Übersehen:** *Korrektur vom 2026-11-07 — „übersehen: nichts" war zu
+stark.* Belastbar ist nur: **die zwei eingebauten Fehler wurden erkannt,
+der korrekte synthetische Fall wurde akzeptiert.** Über echte Entwürfe
+lässt sich nichts sagen — es gibt keine vollständige fachliche
+Referenzbewertung, gegen die man „übersehen" überhaupt messen könnte. Der
+Agent lief über keinen einzigen echten Entwurf.
 
 **Fehlende Belege:** der echte Entwurf hat jede seiner konkreten Angaben
 belegt und für das, was die Anforderung nicht hergibt (Pulsform,

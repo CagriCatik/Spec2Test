@@ -531,7 +531,10 @@ def _run_ground_agent(args, project) -> int:
         for verdict in review.verdicts:
             mark = {"clear": "checked, no finding", "finding": "FINDING",
                     "not_checked": "NOT CHECKED"}[verdict.outcome]
-            _out(f"    {mark:<20} {verdict.path} {verdict.claim}")
+            _out(
+                f"    {mark:<20} [{verdict.claim_id}] {verdict.path} "
+                f"{verdict.claim}"
+            )
         for issue in review.issues:
             reported += 1
             _out(f"    [{issue.code}] {issue.path}: {issue.message[:170]}")
