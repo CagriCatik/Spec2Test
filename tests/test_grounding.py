@@ -138,9 +138,74 @@ def test_a_calculation_without_inputs_is_refused_outright():
         Ground(claim="255 mV", kind=GroundKind.CALCULATION)
 
 
-def test_an_input_without_a_source_is_refused_outright():
-    with pytest.raises(ValueError, match="needs a source"):
-        GroundInput(value="2550 A", source="  ")
+def test_an_input_without_a_source_is_reported_not_refused():
+    """Observed in a real run: the whole draft used to be thrown away.
+
+    The model wrote 2550 A x 100 uOhm = 255 mV correctly but put the numbers
+    into the quotes instead of into "value". A missing key in a ground must
+    cost the ground, not the draft.
+    """
+    from spec2test.domain.grounding import check_calculation
+
+    ground = Ground(
+        claim="255 mV",
+        kind=GroundKind.CALCULATION,
+        inputs=(
+            GroundInput(source="SYS-REQ-0001", quote="the primary 100 uOhm shunt"),
+            GroundInput(source="SYS-REQ-0001", quote="a pulse simulating 2550 A"),
+        ),
+        formula="V = I * R = 2550 A * 100 uOhm = 255 mV",
+    )
+    problem = check_calculation(ground)
+    assert problem and "has no value of its own" in problem
+
+    issues = check_grounds(case_with(ground), [requirement()])
+    assert "C_GROUND_CALCULATION_NOT_REPRODUCIBLE" in codes(issues)
+    assert all(i.severity is not Severity.ERROR for i in issues)
+
+
+def test_an_input_without_a_source_is_reported():
+    from spec2test.domain.grounding import check_grounds
+
+    ground = Ground(
+        claim="255 mV",
+        kind=GroundKind.CALCULATION,
+        inputs=(GroundInput(value="2550 A"),),
+    )
+    assert "C_GROUND_WITHOUT_SOURCE" in codes(
+        check_grounds(case_with(ground), [requirement()])
+    )
+
+
+def test_the_real_answer_that_was_rejected_now_yields_a_draft():
+    """The exact payload a real model produced, which used to be refused."""
+    from spec2test.application.contracts import ParseOutcome
+
+    payload = _payload(
+        [
+            {
+                "claim": "255 mV",
+                "target": "measurements[0]",
+                "kind": "calculation",
+                "source": None,
+                "quote": None,
+                "inputs": [
+                    {"source": "SYS-REQ-0001",
+                     "quote": "primary 100 uOhm current shunt"},
+                    {"source": "SYS-REQ-0001",
+                     "quote": "a pulse simulating 2550 A current step"},
+                ],
+                "formula": "V = I * R = 2550 A * 100 uOhm = 255 mV",
+            }
+        ]
+    )
+    result = parse_model_response(json.dumps(payload))
+    assert result.outcome is not ParseOutcome.SCHEMA_INVALID, result.error_summary()
+    cases, _ = build_from_response(result.response, [requirement()], unit_id="u")
+    report = validate_test_case(cases[0], [requirement()])
+    assert report.blocks_draft is False, "the draft must survive"
+    assert "C_GROUND_CALCULATION_NOT_REPRODUCIBLE" in report.codes()
+    assert report.blocks_approval is True
 
 
 # ================================================================ sources ===

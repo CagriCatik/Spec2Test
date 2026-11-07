@@ -69,8 +69,8 @@ class GroundInputContract(BaseModel):
 
     model_config = _STRICT
 
-    value: Scalar
-    source: str
+    value: Scalar = ""
+    source: str = ""
     quote: str = ""
 
 

@@ -210,17 +210,17 @@ class GroundKind(str, Enum):
 
 @dataclass(frozen=True)
 class GroundInput:
-    """One value a calculation starts from, with where it comes from."""
+    """One value a calculation starts from, with where it comes from.
 
-    value: str
-    source: str
+    An incomplete input is representable on purpose. A model that writes the
+    value into the quote instead of into ``value`` has still said something
+    useful, and throwing its whole draft away over a missing key costs more
+    than reporting the gap. ``check_calculation`` reports it.
+    """
+
+    value: str = ""
+    source: str = ""
     quote: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.value.strip():
-            raise ValueError("a calculation input needs a value")
-        if not self.source.strip():
-            raise ValueError(f"the input {self.value!r} needs a source")
 
 
 @dataclass(frozen=True)

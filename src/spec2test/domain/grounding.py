@@ -142,7 +142,14 @@ def check_calculation(ground: Ground) -> str | None:
             "check can read"
         )
     values = []
-    for item in ground.inputs:
+    for position, item in enumerate(ground.inputs):
+        if not item.value.strip():
+            return (
+                f"input {position + 1} has no value of its own. Observed in a "
+                "real run: the number was written into the quote instead "
+                f"({item.quote[:60]!r}). Put it in \"value\" so the "
+                "arithmetic can be recomputed"
+            )
         parsed = _as_si(item.value)
         if parsed is None:
             return f"the input {item.value!r} is not a number with a unit"
@@ -403,7 +410,15 @@ def _check_one(
 
     if ground.kind is GroundKind.CALCULATION:
         for position, item in enumerate(ground.inputs):
-            if item.source not in sources:
+            if not item.source.strip():
+                yield ValidationIssue(
+                    "C_GROUND_WITHOUT_SOURCE",
+                    Severity.CLARIFICATION,
+                    f"{where}.inputs[{position}]",
+                    f"the input {item.value or item.quote[:40]!r} of the "
+                    "calculation names no source.",
+                )
+            elif item.source not in sources:
                 yield ValidationIssue(
                     "C_GROUND_SOURCE_UNKNOWN",
                     Severity.CLARIFICATION,

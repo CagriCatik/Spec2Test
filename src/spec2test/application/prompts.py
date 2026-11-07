@@ -8,7 +8,7 @@ from ..domain.models import Requirement, ValidationIssue
 from .contracts import SCHEMA_VERSION
 from .ports import ChatMessage
 
-PROMPT_VERSION = "l1-test-draft-7"
+PROMPT_VERSION = "l1-test-draft-8"
 
 GUIDANCE_HEADER = """\
 === PROJECT GUIDANCE (additional, lower precedence) ===
@@ -59,9 +59,16 @@ Hard rules:
      kind "context" - a supporting context item states it. Give its
        context_ref as "source" and the sentence as "quote".
      kind "calculation" - it follows from other values. Give "inputs", one
-       per starting value with its own "source" and "quote", and "formula".
-       The arithmetic is recomputed; state the inputs that actually produce
-       the result.
+       per starting value, EACH with its own "value", "source" and "quote",
+       and give "formula". The arithmetic is recomputed from the "value"
+       fields, so the number must be in "value" and not only inside the
+       quote. For example:
+         {{"claim": "255 mV", "target": "measurements[0]",
+           "kind": "calculation", "formula": "V = I * R",
+           "inputs": [{{"value": "2550 A", "source": "SYS-REQ-0001",
+                       "quote": "a pulse simulating 2550 A"}},
+                      {{"value": "100 uOhm", "source": "SYS-REQ-0001",
+                       "quote": "the primary 100 uOhm current shunt"}}]}}
      kind "unresolved" - nothing states it. Then do not write it as an
        expectation at all: put it in "question" and raise an open question.
    One ground per claim, with "claim" repeating the value verbatim and

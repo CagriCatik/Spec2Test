@@ -1,0 +1,85 @@
+{
+  "prompt_version": "l1-test-draft-7",
+  "model": "gpt-oss:120b-cloud",
+  "call_budget": 3,
+  "calls_used": 3,
+  "generated": [],
+  "synthetic": [
+    {
+      "name": "wrong quantity (12 V is the supply rail)",
+      "deterministic": [],
+      "claim": "12 V",
+      "quote": "The 12 V auxiliary supply powers the monitoring board.",
+      "agent": {
+        "ok": true,
+        "complete": true,
+        "summary": "1 of 1 claim(s) judged, 1 finding(s), 0 not checked",
+        "verdicts": [
+          {
+            "claim": "12 V",
+            "path": "SYN-1.steps[0].expectations[0]",
+            "outcome": "finding",
+            "verdict": "mismatched_quantity",
+            "confidence": "high",
+            "explanation": "The quote refers to a 12\u202fV auxiliary supply powering the monitoring board, not the cell voltage of the battery, so it does not support the claim about cell voltage staying below 12\u202fV."
+          }
+        ],
+        "issues": [
+          {
+            "code": "C_GROUND_REVIEW_QUANTITY",
+            "message": "[high confidence, model gpt-oss:120b-cloud] 12 V: The quote refers to a 12\u202fV auxiliary supply powering the monitoring board, not the cell voltage of the battery, so it does not support the claim about cell voltage staying below 12\u202fV."
+          }
+        ]
+      }
+    },
+    {
+      "name": "wrong state (4.20 V is the charging limit)",
+      "deterministic": [],
+      "claim": "4.20 V",
+      "quote": "While the pack is charging, the cell voltage shall not exceed 4.20 V.",
+      "agent": {
+        "ok": true,
+        "complete": true,
+        "summary": "1 of 1 claim(s) judged, 1 finding(s), 0 not checked",
+        "verdicts": [
+          {
+            "claim": "4.20 V",
+            "path": "SYN-2.steps[0].expectations[0]",
+            "outcome": "finding",
+            "verdict": "mismatched_condition",
+            "confidence": "high",
+            "explanation": "The quote limits cell voltage to 4.20\u202fV only while the pack is charging, whereas the test step concerns driving at constant speed."
+          }
+        ],
+        "issues": [
+          {
+            "code": "C_GROUND_REVIEW_CONDITION",
+            "message": "[high confidence, model gpt-oss:120b-cloud] 4.20 V: The quote limits cell voltage to 4.20\u202fV only while the pack is charging, whereas the test step concerns driving at constant speed."
+          }
+        ]
+      }
+    },
+    {
+      "name": "correct (4.15 V is the driving limit)",
+      "deterministic": [],
+      "claim": "4.15 V",
+      "quote": "During driving the cell voltage shall not exceed 4.15 V.",
+      "agent": {
+        "ok": true,
+        "complete": true,
+        "summary": "1 of 1 claim(s) judged, 0 finding(s), 0 not checked",
+        "verdicts": [
+          {
+            "claim": "4.15 V",
+            "path": "SYN-3.steps[0].expectations[0]",
+            "outcome": "clear",
+            "verdict": "fits",
+            "confidence": "high",
+            "explanation": "The quote states the cell voltage shall not exceed 4.15\u202fV during driving, which directly provides the 4.15\u202fV limit referenced in the claim."
+          }
+        ],
+        "issues": []
+      }
+    }
+  ]
+}
