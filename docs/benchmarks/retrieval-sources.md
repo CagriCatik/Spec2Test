@@ -73,6 +73,12 @@ Vollständige Ausgabe mit allen Fehlschlägen:
 * BM25 ist bei exakten Kennungen **fehlerfrei** und bei Signalnamen fast
   fehlerfrei. Bei Prosa findet es in **12 von 20 Fällen überhaupt nichts** —
   auch nicht auf Platz 10.
+  > **Korrektur vom 2026-11-07.** Diese 20 Fragen sind ein lexikalisches
+  > Worst-Case-Set: ich habe beim Formulieren die Bezeichner bewusst
+  > vermieden. Auf 16 später geschriebenen Holdout-Fragen erreicht BM25
+  > MRR 0,414 statt 0,172 und findet 11 von 16. Siehe
+  > [retrieval-pipeline.md](retrieval-pipeline.md). „Fast blind" gilt nur
+  > für diese Menge.
 * Embeddings sind bei Prosa mehr als **doppelt so gut** (MRR 0,172 → 0,369;
   Fehlschläge 12 → 4), aber bei exakten Kennungen unbrauchbar: 13 von 20
   Anforderungskennungen findet das Modell nicht. Das ist kein Mangel dieses

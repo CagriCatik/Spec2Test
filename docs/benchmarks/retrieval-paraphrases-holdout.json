@@ -1,0 +1,74 @@
+{
+  "purpose": "A second set of authored prose questions, written AFTER the retriever weighting and the passage segmentation were fixed, over requirements that were NOT in the first set. Nothing has been tuned on these. They exist so a claim of improvement can be checked against questions that never shaped the thing being measured.",
+  "corpus": "requirements/*.md",
+  "authored_by": "Claude (search queries, not quality judgements)",
+  "written_on": "2026-11-07",
+  "holdout": true,
+  "used_for_tuning": "never - if any threshold is ever changed on the strength of these numbers, this file stops being a holdout and a new one is needed",
+  "questions": [
+    {
+      "requirement": "BMS-REQ-SC-0901",
+      "question": "What cuts the current when a dead short happens faster than software could react?"
+    },
+    {
+      "requirement": "BMS-REQ-SC-0904",
+      "question": "How is it checked that the explosive disconnect device is still intact and wired up?"
+    },
+    {
+      "requirement": "BMS-REQ-PWR-0903",
+      "question": "How does the unit decide whether a signal that woke it up was a real reason to wake?"
+    },
+    {
+      "requirement": "BMS-REQ-AUX-1404",
+      "question": "What keeps the air conditioning compressor from pulling a damaging surge when it starts?"
+    },
+    {
+      "requirement": "BMS-REQ-UDS-1302",
+      "question": "What has to be shut down in order before the control unit is allowed to restart itself?"
+    },
+    {
+      "requirement": "BMS-REQ-XCP-1803",
+      "question": "How can calibration values be changed while the system runs without losing the old set?"
+    },
+    {
+      "requirement": "BMS-REQ-NM-1901",
+      "question": "How do the control units on the bus agree that everyone may go to sleep?"
+    },
+    {
+      "requirement": "BMS-REQ-XFC-1602",
+      "question": "How is charging held back so that metal does not build up on the negative electrode?"
+    },
+    {
+      "requirement": "BMS-REQ-BRK-1701",
+      "question": "What does the combined switching and protection device in the pack actually do?"
+    },
+    {
+      "requirement": "BMS-REQ-DSC-1504",
+      "question": "How can a rescue crew make the vehicle safe by hand after a crash?"
+    },
+    {
+      "requirement": "BMS-REQ-VNV-1203",
+      "question": "How is a broken link in the daisy chain between the measuring boards proven?"
+    },
+    {
+      "requirement": "BMS-REQ-DIA-0703",
+      "question": "How many times must a fault be seen before it is believed, and when is it forgotten again?"
+    },
+    {
+      "requirement": "BMS-REQ-COM-0802",
+      "question": "How does a receiver notice that a message was lost, repeated or arrived out of order?"
+    },
+    {
+      "requirement": "BMS-REQ-EST-0203",
+      "question": "How is it worked out how much charge the pack can still hold after years of use?"
+    },
+    {
+      "requirement": "BMS-REQ-HVC-0305",
+      "question": "How is the holding power of a closed contactor reduced without letting it drop out?"
+    },
+    {
+      "requirement": "BMS-REQ-THM-0405",
+      "question": "What is done to the enclosure when a cell has already started to run away?"
+    }
+  ]
+}

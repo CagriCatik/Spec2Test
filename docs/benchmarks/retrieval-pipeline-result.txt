@@ -1,0 +1,71 @@
+corpus: 22 documents, 213 passages
+a hit counts within the first 10; context budget 6000 characters
+
+==============================================================================
+TUNED (THE 20 QUESTIONS THE WEIGHTING WAS CHOSEN WITH)
+==============================================================================
+fts5 (bm25)  (20 prose questions through build_context)
+     n   found    sent  starved   items   connected chars   unconnected  omitted
+    20    0.85    0.50        9     3.8       23447 (22%)         82729      173
+  budget held for the task text: 30000 characters, 27360 used (91%)
+
+hybrid (rank fusion)  (20 prose questions through build_context)
+     n   found    sent  starved   items   connected chars   unconnected  omitted
+    20    0.90    0.60        7     4.2       18751 (17%)         89263      196
+  budget held for the task text: 30000 characters, 23254 used (78%)
+
+ranking only, for comparison with retrieval-sources.md:
+exact_id  (20 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           1.00       1.00       1.00       1.000    0.000     0
+  hybrid (rank fusion)  1.00       1.00       1.00       1.000    0.046     0
+
+paraphrase  (20 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           0.10       0.20       0.25       0.172    0.001     12
+  hybrid (rank fusion)  0.20       0.35       0.45       0.313    0.049     8
+
+signal_name  (20 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           0.90       1.00       1.00       0.942    0.000     0
+  hybrid (rank fusion)  0.90       0.95       0.95       0.933    0.046     0
+
+all queries  (60 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           0.67       0.73       0.75       0.705    0.000     12
+  hybrid (rank fusion)  0.70       0.77       0.80       0.749    0.047     8
+
+==============================================================================
+HOLDOUT (WRITTEN AFTERWARDS, NEVER USED FOR TUNING)
+==============================================================================
+fts5 (bm25)  (16 prose questions through build_context)
+     n   found    sent  starved   items   connected chars   unconnected  omitted
+    16    0.81    0.69        4     4.1       28903 (34%)         55664      132
+  budget held for the task text: 24000 characters, 19995 used (83%)
+
+hybrid (rank fusion)  (16 prose questions through build_context)
+     n   found    sent  starved   items   connected chars   unconnected  omitted
+    16    0.81    0.62        5     4.1       15756 (18%)         72792      150
+  budget held for the task text: 24000 characters, 18275 used (76%)
+
+ranking only, for comparison with retrieval-sources.md:
+exact_id  (20 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           1.00       1.00       1.00       1.000    0.000     0
+  hybrid (rank fusion)  1.00       1.00       1.00       1.000    0.046     0
+
+paraphrase  (16 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           0.25       0.44       0.69       0.414    0.001     3
+  hybrid (rank fusion)  0.31       0.56       0.69       0.494    0.047     2
+
+signal_name  (20 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           0.90       1.00       1.00       0.942    0.000     0
+  hybrid (rank fusion)  0.90       0.95       0.95       0.933    0.041     0
+
+all queries  (56 queries)
+  retriever             recall@1   recall@3   recall@5   MRR      median s  misses
+  fts5 (bm25)           0.75       0.84       0.91       0.812    0.000     3
+  hybrid (rank fusion)  0.77       0.86       0.89       0.832    0.044     2
+
