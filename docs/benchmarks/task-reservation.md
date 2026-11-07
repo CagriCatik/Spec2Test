@@ -5,6 +5,10 @@ nicht beantworten, und wo er es kann, liegt der Effekt in der Streuung des
 Modells. Die Reservierung ist deshalb standardmäßig aus und bleibt
 einschaltbar.**
 
+Das heißt ausdrücklich **nicht**, dass sie wirkungslos ist: in sechs von
+acht Paaren hat sie den gesendeten Kontext überhaupt nicht verändert. Ein
+unbelegter Standard wird fallengelassen, nicht widerlegt.
+
 Rohdaten: [task-reservation-rows.json](task-reservation-rows.json).
 Reproduzieren: `docs/benchmarks/compare_task_reservation.py`.
 
@@ -26,7 +30,10 @@ NM-1901, HVC-0305. **Diagnostisch auf bekannten Fällen, kein unabhängiger
 Abschlusstest.**
 
 Vollständigkeit: 16 geplant, **16 abgeschlossen**, 0 Fehlschläge,
-18 Modellaufrufe, **1 Reparatur** (Arm B). Kein Lauf über dem
+**17 Modellaufrufe**, **1 Reparatur** (Arm B, HVC-0305 Wdh. 1).
+*Korrektur: die erste Fassung nannte 18. Das war ein Übertragungsfehler von
+mir, kein verschwiegener Aufruf — die Rohdaten nennen 17, also 16 erste
+Versuche plus eine Reparatur. Es gab keine Transportwiederholung.* Kein Lauf über dem
 Zeichenbudget; Tabellenköpfe sind mitgezählt (im Schnitt 235 Zeichen je
 Lauf, in beiden Armen gleich).
 
@@ -104,25 +111,56 @@ Nur SC-0901 trägt überhaupt Information. Kontext:
 | A | DTC-Tabelle (689), Netztopologie (2234), **„1. Scope & Ultra-Fast Safety Topography"** (2364, eine Dokumenteinleitung) |
 | B | DTC-Tabelle (689), Netztopologie (2234), **„2. Ultra-Fast Short-Circuit Trip Timing Sequence"** (1217, der einschlägige Abschnitt), *Aufgabentreffer* „Network Topography & Communication Stack" (1307) |
 
+> **Korrektur vom 2026-11-07.** Die erste Fassung dieses Abschnitts hat die
+> Belegfrage falsch beantwortet. Sie steht unten richtiggestellt; meine
+> damalige Schlussfolgerung „B ist brauchbarer" wird dadurch schwächer.
+
 **Welche hilfreiche Information wurde korrekt genutzt?**
-In B: die Komparatorschwelle. Der Entwurf schreibt *„Shunt voltage exceeds
-the comparator reference (≥250 mV)"* und *„≈255 mV step"*. Die Anforderung
-nennt 2550 A und einen 100 µΩ-Shunt; 2550 A × 100 µΩ = 255 mV. Die
-Rechnung stimmt und macht den Schritt ausführbar. In A fehlt sie.
+Hier muss jeder Wert einzeln belegt werden, und das ergibt ein anderes Bild
+als zuerst behauptet. Die Zielanforderung selbst nennt:
+
+```
+HW_Comparator_Reference_Voltage   Calibrated Value: 250.0 mV ± 2.0 mV
+                                  (entspricht |I_fault| = 2500 A)
+Timing & Debounce                 Gesamtantwortzeit ≤ 2.0 µs
+Shunt                             100 µΩ
+Abnahmehinweis                    Puls simuliert 2550 A, Latch ≤ 2.0 µs
+```
+
+Daraus folgt:
+
+| Angabe im Entwurf | Grundlage | Urteil |
+|---|---|---|
+| `≥ 250 mV` Komparatorschwelle (B) | **steht in der Zielanforderung** | belegt — aber *nicht* durch meine Rechnung |
+| `≤ 2.0 µs` (A **und** B) | **steht in der Zielanforderung** | belegt in beiden Armen |
+| `≈ 255 mV` Pulsamplitude (B) | 2550 A × 100 µΩ, beide Werte aus der Anforderung | **abgeleitet**, Rechnung korrekt |
+| Anstiegszeit des Pulses | nirgends genannt | **offen** |
+
+*Meine erste Fassung hat `2550 A × 100 µΩ = 255 mV` als Beleg für die
+250-mV-Schwelle und für die Zeitgrenze ausgegeben. Beides ist falsch. Die
+Rechnung belegt genau einen Wert, die Pulsamplitude, und 250 mV gehört zu
+einer anderen Größe (2500 A, nicht 2550 A).* Dass B diese beiden Zahlen
+nebeneinanderstellt, ohne den Unterschied zu nennen, ist eher eine
+Schwäche des Entwurfs als eine Stärke.
 
 **Welche Erwartung ist unbelegt?**
-In A: *„Pulse rise time is sufficiently fast to represent an ultra-fast
-short circuit (open question)"* — keine Zahl, keine Quelle, als Rückfrage
-markiert. Dasselbe in Testfall 2. A hat 10 unbelegte Werte, B 6.
+Die Zählung der Prüfung nennt 10 in A und 6 in B. Davon ist mindestens eine
+in A **keine**: *„Pulse rise time is sufficiently fast to represent an
+ultra-fast short circuit (open question)"* ist eine **korrekt benannte
+Lücke**, keine erfundene Vorgabe — die Anstiegszeit steht nirgends, und sie
+als offene Frage zu markieren ist genau das verlangte Verhalten. *Meine
+erste Fassung hat das als Mangel von A gewertet. Das war falsch.*
 
 **Welche wichtigen Testbedingungen fehlen?**
-In beiden: die Anstiegszeit des Prüfpulses und die Toleranz des
-Komparators bleiben offen. Die Netztopologie-Passage, die beide Arme
-tragen, beantwortet davon nichts.
+In beiden: die Anstiegszeit des Prüfpulses und die Bandbreite der
+Messkette. Die Komparatortoleranz (± 2,0 mV) steht in der Anforderung und
+wird von keinem der beiden Entwürfe aufgegriffen.
 
 **Ist der Entwurf brauchbarer?**
-B ja — ein Tester kann *„≤2,0 µs nach Überschreiten von 250 mV"* an den
-Prüfstand geben, *„sufficiently fast"* nicht.
+Schwächer als zuerst behauptet. B nennt die Schwelle explizit, A nicht —
+das hilft. Aber beide stützen sich auf dieselbe Zielanforderung, und beide
+lassen dieselben Lücken. **Der belastbare Unterschied ist, dass A die
+Schwelle verschweigt, nicht dass B sie hergeleitet hätte.**
 
 **Aber der Grund ist nicht die Reservierung.** Der nützliche Abschnitt
 („Trip Timing Sequence") kam über die **Anforderungs-Suche**, nicht über die
