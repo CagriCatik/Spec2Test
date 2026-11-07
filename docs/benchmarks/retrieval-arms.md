@@ -1,10 +1,17 @@
 # Drei Varianten, eine Grundlinie: ohne Retrieval, lexikalisch, hybrid
 
 **Befund in einem Satz: bessere Quellenfindung erreicht die Entwürfe nicht.
-Hybrid holt nachweislich andere Passagen als BM25 und ändert am Ergebnis
-nichts zum Besseren — in mehreren Kennzahlen zum Schlechteren. Der Engpass
-liegt nicht bei der Suche, sondern davor: ein Drittel bis fast die Hälfte
-des gelieferten Kontexts sind die Einleitungsabschnitte der Dokumente.**
+Hybrid holt nachweislich andere Passagen als BM25, und ein
+Generierungsnutzen ist damit nicht gezeigt — weder in die eine noch
+überzeugend in die andere Richtung.**
+
+> **Korrekturen vom 2026-11-07.** Keine Zahl wurde geändert; drei
+> Interpretationen waren zu stark. Sie stehen unten jeweils an Ort und
+> Stelle als „Korrektur". Kurz: hybrid ist *nicht* in jeder Kennzahl
+> schlechter als lexikalisch; die 32/42 % sind Anteile der **Posten**, nach
+> Zeichen sind es 24/37 %; und die zusätzlichen Konfliktmeldungen belegen
+> **keine** zusätzlichen sachlichen Widersprüche. Die Empfehlung in
+> Abschnitt 4 bleibt, ihre Begründung ist schwächer geworden.
 
 Rohdaten: [retrieval-arms-rows.json](retrieval-arms-rows.json),
 Auswertung: [retrieval-arms-result.txt](retrieval-arms-result.txt).
@@ -52,14 +59,19 @@ Gegenstück in jeder Variante — der gepaarte Vergleich lässt nichts aus.
 Drei Dinge daran sind belastbar genug, um etwas zu entscheiden:
 
 1. **Retrieval verschlechtert die Belegtreue.** Unbelegte Werte steigen von
-   1,07 auf 1,60 (lexikalisch) bzw. 1,32 (hybrid). Mögliche Wertkonflikte
-   entstehen überhaupt erst mit Kontext: 0,00 → 0,75 → 1,05. Das ist
-   derselbe Effekt wie in der 80-Lauf-Messung und hat den Prompt-Fix
-   `l1-test-draft-4/5` überlebt.
-2. **Hybrid ist nicht besser als lexikalisch.** In jeder Kennzahl, in der
-   sie sich unterscheiden, liegt hybrid gleichauf oder schlechter: mehr
-   Befunde für den Reviewer (8,80 gegen 7,83), mehr Wertkonflikte, mehr
-   Rückfragen. Nur bei unbelegten Werten liegt es zwischen den beiden.
+   1,07 auf 1,60 (lexikalisch) bzw. 1,32 (hybrid). Das ist derselbe Effekt
+   wie in der 80-Lauf-Messung und hat den Prompt-Fix `l1-test-draft-4/5`
+   überlebt. Die Konfliktmeldungen (0,00 → 0,75 → 1,05) gehören **nicht**
+   hierher — siehe die Korrektur weiter unten.
+2. **Für hybrid ist kein Generierungsnutzen gezeigt.**
+   *Korrektur: die frühere Fassung schrieb „in jeder Kennzahl gleichauf
+   oder schlechter". Das ist falsch.* Bei **unbelegten Werten liegt hybrid
+   mit 1,32 unter lexikalisch mit 1,60** — aber über den 1,07 ohne
+   Retrieval. Schlechter ist hybrid bei den Befunden für den Reviewer
+   (8,80 gegen 7,83) und bei den Konfliktmeldungen (1,05 gegen 0,75, zu
+   deren Aussagekraft siehe unten). Richtig ist deshalb nur: **ein
+   belastbarer Qualitätsvorteil von hybrid ist nicht nachgewiesen**, kein
+   durchgängiger Nachteil.
 3. **Der Kontext wird fast nicht benutzt.** 3 übernommene Werte aus 120
    gesendeten Posten (lexikalisch), 2 aus 128 (hybrid). Das ist für sich
    genommen kein Fehler (siehe Abschnitt 3), aber es begrenzt, was
@@ -142,14 +154,44 @@ lexikalisch** und 22 statt 12 Rückfragen — hier hat der Kontext nicht
 geholfen, sondern gestreut. Eine korrekte Nutzung konnte ich in dieser
 Stichprobe nirgends belegen.
 
+### Korrektur: die Konfliktmeldungen beweisen keine Widersprüche
+
+Der Bericht hat 0,00 → 0,75 → 1,05 als Schaden durch Retrieval gelesen. Das
+ist nicht haltbar. Ohne Kontext gibt es nichts zu vergleichen, also kann die
+Zahl gar nicht anders als bei null liegen. Entscheidend ist, wie viele
+Meldungen fachlich zutreffen — also habe ich sie gelesen.
+
+72 Meldungen, **28 verschiedene Behauptungen**. Meine Lesart (nicht die
+eines Testers):
+
+| | Anzahl | Beispiele |
+|---|---:|---|
+| vergleicht erkennbar verschiedene Größen mit gleicher Einheit | **~22** | `3,65 V` (Zellspannung) gegen `12 V` (Bordnetz); `800 V` (HV-Bus) gegen `12 V`; `20 A` (Balancing) gegen `2,2 A` (Versorgung); `500 ms` gegen `5 ms` aus einem anderen Dokument |
+| offensichtlicher Parse-Artefakt | 1 | `8508 A` — als Strom sinnlos |
+| unklar, einen Blick wert | ~4 | `30 A` gegen `25 A` (beide Schützströme, dasselbe Dokument); `20 A` gegen `5 A`; `20 V` gegen `10 V`; `12 V` gegen `10 V` |
+| von mir bestätigter Widerspruch | **0** | – |
+
+Die Meldung selbst sagt bereits „This is a suspicion, not a confirmed
+conflict" — insofern lügt sie nicht. Aber als Beleg für Schaden durch
+Retrieval taugt sie nicht. Sie ist stattdessen ein Befund **über die Regel**:
+`C_POSSIBLE_VALUE_CONFLICT` vergleicht Größen, die nur die Einheit teilen,
+und erzeugt damit überwiegend Rauschen, sobald Kontext da ist. Das gehört
+auf die Liste, ist aber ein anderes Arbeitspaket.
+
 ### Was dabei auffiel und nicht in der Stichprobe stand
 
 Über alle 80 Retrieval-Läufe gezählt:
 
-| | Anteil Einleitungsabschnitte („1. Scope & …") |
-|---|---:|
-| lexikalisch | 38 von 120 — **32 %** |
-| hybrid | 54 von 128 — **42 %** |
+| | Posten | Zeichen |
+|---|---:|---:|
+| lexikalisch | 38 von 120 — 32 % | 53 024 von 217 222 — **24 %** |
+| hybrid | 54 von 128 — 42 % | 81 926 von 222 750 — **37 %** |
+
+*Korrektur: die frühere Fassung nannte nur die 32/42 % und sprach dabei vom
+„Budget". Das waren Anteile der **Posten**. Nach tatsächlich verbrauchtem
+Text sind es **24 % bzw. 37 %** — Einleitungen sind kleiner als der
+Durchschnitt (1395 bzw. 1517 Zeichen gegen rund 1950 der übrigen). Der
+Effekt bleibt erheblich, ist aber kleiner, als die Postenzahl nahelegt.*
 
 Die sechs meistgelieferten Abschnitte des gesamten Korpus:
 
@@ -162,12 +204,18 @@ Die sechs meistgelieferten Abschnitte des gesamten Korpus:
  12x  2. CAN-FD Broadcast Message Matrix
 ```
 
-Ein Drittel bis fast die Hälfte des Kontextbudgets geht an die inhaltsärmsten
-Abschnitte, die ein Dokument hat. Hybrid ist darin **schlechter**, weil
-semantische Ähnlichkeit allgemein gehaltene thematische Prosa belohnt — und
-genau das ist eine Einleitung. Diese Abschnitte verdrängen über das
-Zeichenbudget die Schwester-Anforderungen und die Aufgaben-Treffer, die
-etwas beigetragen hätten.
+Ein Viertel bis gut ein Drittel des verbrauchten Kontexttextes geht an die
+Einleitungsabschnitte. Hybrid ist darin **schlechter**, weil semantische
+Ähnlichkeit allgemein gehaltene thematische Prosa belohnt — und genau das
+ist eine Einleitung. Diese Abschnitte verdrängen über das Zeichenbudget
+Schwester-Anforderungen und Aufgaben-Treffer, die etwas beigetragen hätten.
+
+**Das ist eine Arbeitshypothese, keine bewiesene Ursache.** Schlechte
+Segmentierung, Rangfolge und Budgetverteilung können gemeinsam beitragen,
+und die drei sind hier nicht getrennt gemessen. Dass die Aufgaben-Suche in
+22 von 40 Läufen am Budget scheiterte, zeigt mindestens einen zweiten Anteil.
+Und **Einleitungen pauschal zu entfernen wäre falsch**: manche nennen
+Betriebsbedingungen, die für einen Test gebraucht werden.
 
 ## 4. Empfehlung
 
@@ -177,10 +225,13 @@ was überhaupt als abrufbare Passage im Index landet.**
 
 Begründung aus den Zahlen:
 
-* Hybrid liefert nachweislich andere Passagen (38 von 40 Paaren) und ist in
-  keiner Kennzahl besser, in mehreren schlechter. Für einen gezielten
-  Einsatz fehlt ein Fall, in dem es gewinnt — die Quellenmessung zeigt den
-  Vorteil bei Prosafragen, die Generierung holt ihn nicht ab.
+* Hybrid liefert nachweislich andere Passagen (38 von 40 Paaren), ohne dass
+  daraus ein gezeigter Generierungsnutzen folgt. Bei unbelegten Werten liegt
+  es besser als lexikalisch (1,32 gegen 1,60), bei den Befunden für den
+  Reviewer schlechter (8,80 gegen 7,83) — zusammen reicht das weder für eine
+  Einführung noch für ein endgültiges Nein. Die Quellenmessung zeigt den
+  Vorteil bei Prosafragen; die Generierung holt ihn in dieser Messung nicht
+  ab, und der Hebel dafür war in 22 von 40 Läufen blockiert.
 * Der Mehraufwand ist real: ein Modell, 203 Vektoren, ein Cache, ein
   Fallback-Pfad. Dafür gibt es derzeit keinen Gegenwert.
 * Die Paarprüfung zeigt, dass gute Quellen gefunden werden und ungenutzt

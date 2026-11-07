@@ -53,7 +53,7 @@ from ..adapters.export import (
     save_json,
     save_markdown,
     save_specification_xlsx,
-    save_xlsx,
+    save_rows_xlsx,
     summarise_rows,
 )
 from ..application.generate import estimate_runtime
@@ -1389,7 +1389,7 @@ class MainWindow(QMainWindow):
         self._export(save_csv, "Export CSV", "CSV files (*.csv)")
 
     def export_xlsx(self) -> None:
-        self._export(save_xlsx, "Export Excel", "Excel workbook (*.xlsx)")
+        self._export(save_rows_xlsx, "Export Excel", "Excel workbook (*.xlsx)")
 
     def export_specification_markdown(self) -> None:
         self._export_specification(

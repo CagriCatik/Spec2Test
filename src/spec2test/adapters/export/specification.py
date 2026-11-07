@@ -272,7 +272,7 @@ SHEETS = ("Test cases", "Test steps", "Requirement links", "Open questions",
           "Context sources")
 
 
-def save_xlsx(spec: TestSpecification, path: Path | str) -> Path:
+def save_specification_xlsx(spec: TestSpecification, path: Path | str) -> Path:
     """Separate sheets; a step keeps its action and expectation in one row."""
     import pandas as pd
     from openpyxl.utils import get_column_letter
@@ -377,3 +377,7 @@ def save_xlsx(spec: TestSpecification, path: Path | str) -> Path:
                 width = max([len(str(column))] + [min(len(v), 60) for v in values]) + 2
                 sheet.column_dimensions[get_column_letter(index)].width = width
     return path
+
+
+#: deprecated alias, see the note in tabular.py
+save_xlsx = save_specification_xlsx

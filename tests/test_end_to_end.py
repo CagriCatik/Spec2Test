@@ -449,3 +449,66 @@ def test_the_specification_can_be_suppressed(spec_a, tmp_path):
           "--no-spec"])
     assert list(out.glob("*.md")) == []
     assert list(out.glob("run-*.json")), "the run file is still written"
+
+
+# ------------------------------------------------- the two xlsx exporters ---
+def test_the_two_excel_exporters_have_distinct_names():
+    """They were both called save_xlsx; importing the wrong one was easy."""
+    from spec2test.adapters import export
+
+    assert export.save_rows_xlsx is not export.save_specification_xlsx
+    assert export.save_xlsx is export.save_rows_xlsx, "the old name kept its meaning"
+    for name in ("save_rows_xlsx", "save_specification_xlsx", "save_xlsx"):
+        assert name in export.__all__, name
+
+
+def test_each_exporter_writes_its_own_shape(tmp_path, spec_a):
+    from spec2test.adapters.export import (
+        COLUMNS,
+        SHEETS,
+        save_rows_xlsx,
+        save_specification_xlsx,
+        summarise_rows,
+    )
+    from spec2test.adapters.fake.model import RuleBasedFakeModel
+    from spec2test.application.generate import GenerationSettings, generate_drafts
+    from spec2test.application.ingest import import_documents
+    from spec2test.adapters.documents import DEFAULT_IMPORTERS
+    from spec2test.application.review import project_from_run
+    from spec2test.application.specification import build_specification
+
+    results = import_documents([spec_a], DEFAULT_IMPORTERS)
+    requirements = [r for result in results for r in result.requirements]
+    documents = [result.document for result in results]
+    run = generate_drafts(
+        requirements[:2],
+        RuleBasedFakeModel(),
+        settings=GenerationSettings(group_size=1),
+    )
+    project = project_from_run(run, requirements, documents, name="export")
+    specification = build_specification(project)
+
+    import openpyxl
+
+    from spec2test.application.legacy import legacy_rows
+
+    rows = legacy_rows(project.test_cases)
+    assert rows, "the fixture produced no rows"
+    rows_file = tmp_path / "rows.xlsx"
+    save_rows_xlsx(rows, rows_file)
+    assert [c.value for c in openpyxl.load_workbook(rows_file).active[1]] == list(
+        COLUMNS
+    )
+    assert summarise_rows(rows), "the summary is empty"
+
+    spec_file = tmp_path / "spec.xlsx"
+    save_specification_xlsx(specification, spec_file)
+    assert openpyxl.load_workbook(spec_file).sheetnames == list(SHEETS)
+
+
+def test_the_specification_exporter_refuses_a_list_of_rows(tmp_path):
+    """The failure that the shared name produced, now impossible to hit silently."""
+    from spec2test.adapters.export import save_specification_xlsx
+
+    with pytest.raises((AttributeError, TypeError)):
+        save_specification_xlsx([{"a": 1}], tmp_path / "wrong.xlsx")

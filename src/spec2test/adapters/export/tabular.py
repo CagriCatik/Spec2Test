@@ -35,7 +35,7 @@ def save_csv(rows: Sequence[Dict], path: Path | str) -> Path:
     return path
 
 
-def save_xlsx(rows: Sequence[Dict], path: Path | str) -> Path:
+def save_rows_xlsx(rows: Sequence[Dict], path: Path | str) -> Path:
     import pandas as pd
     from openpyxl.utils import get_column_letter
 
@@ -113,3 +113,9 @@ def summarise_rows(rows: Sequence[Dict]) -> Dict[str, object]:
         "avg_actions": round(avg_actions, 2) if avg_actions else 0,
         "avg_expected_results": round(avg_results, 2) if avg_results else 0,
     }
+
+
+#: deprecated: the name said nothing about which exporter it is, and the
+#: specification exporter of the same name was imported by mistake. Remove
+#: once no caller outside this repository uses it.
+save_xlsx = save_rows_xlsx
